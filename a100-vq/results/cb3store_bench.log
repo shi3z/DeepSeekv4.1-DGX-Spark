@@ -1,0 +1,6 @@
+=== CB3 + pre-packed store (warm start 289s) ===
+[a100-vq] pre-packed CB3 store: 6087 experts
+  run1   4.04 tok/s | accept  1.63 |  246.6 ms/tok | nvme 0.116 GB/tok | hit 0.9426
+  run2   8.33 tok/s | accept  1.64 |  119.6 ms/tok | nvme 0.036 GB/tok | hit 0.985
+  run3  18.28 tok/s | accept  1.64 |   54.5 ms/tok | nvme 0.003 GB/tok | hit 1.0
+STOREBENCH DONE

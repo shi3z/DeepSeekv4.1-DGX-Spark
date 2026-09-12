@@ -1,0 +1,5 @@
+=== FP4 baseline, 3 runs (warm start 104s) ===
+  run1   6.93 tok/s | accept  1.61 |  143.8 ms/tok | nvme 0.369 GB/tok | hit 0.9289
+  run2   9.13 tok/s | accept  1.65 |  109.1 ms/tok | nvme 0.233 GB/tok | hit 0.9585
+  run3   9.71 tok/s | accept  1.65 |  102.5 ms/tok | nvme 0.213 GB/tok | hit 0.9625
+FP4CTL DONE

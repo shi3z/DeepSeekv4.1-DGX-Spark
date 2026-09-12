@@ -1,0 +1,7 @@
+=== EXPERT_FORMAT=cb3 (warm start 296s) ===
+  run1   2.30 tok/s | accept  1.62 |  434.0 ms/tok | nvme 0.303 GB/tok | hit 0.942
+  run2   6.71 tok/s | accept  1.59 |  148.5 ms/tok | nvme 0.069 GB/tok | hit 0.9872
+=== EXPERT_FORMAT=fp4 (warm start 96s) ===
+  run1   7.03 tok/s | accept  1.61 |  141.7 ms/tok | nvme 0.369 GB/tok | hit 0.9289
+  run2   9.18 tok/s | accept  1.65 |  108.5 ms/tok | nvme 0.233 GB/tok | hit 0.9585
+CB3STREAM DONE

@@ -1,0 +1,365 @@
+##### EXPERT_FORMAT=fp4 (warm start 96s) #####
+----- pass1 prompt1 -----
+[6.78 tok/s, 260 tokens]
+日本の四季は、それぞれ異なる気候と行事で彩られています。
+
+春は3月から5月頃までで、寒さがゆるみ、桜が咲き誇ります。代表的な行事は花見で、桜の下で食事や団らんを楽しみます。また、3月3日のひな祭りや、5月5日の端午の節句も春の行事です。
+
+夏は6月から8月頃までで、高温多湿となります。6月から7月にかけては梅雨があり、その後は厳しい暑さが続きます。代表的な行事は、7月の七夕や、8月のお盆、各地の夏祭りや花火大会です。盂蘭盆会では祖先を供養します。
+
+秋は9月から11月頃までで、涼しく過ごしやすくなり、紅葉が見頃を迎えます。代表的な行事は、9月の十五夜（中秋の名月）や、11月15日の七五三です。また、各地で収穫を祝う祭りも行われます。
+
+冬は12月から2月頃までで、寒さが厳しくなり、日本
+----- pass1 prompt2 -----
+[5.37 tok/s, 260 tokens]
+```python
+def fibonacci(n):
+    """
+    Return the n-th Fibonacci number using an iterative approach.
+
+    The Fibonacci sequence is defined as:
+        F(0) = 0
+        F(1) = 1
+        F(n) = F(n-1) + F(n-2) for n >= 2
+
+    Parameters
+    ----------
+    n : int
+        The index of the Fibonacci number to compute. Must be a non-negative
+        integer.
+
+    Returns
+    -------
+    int
+        The n-th Fibonacci number.
+
+    Raises
+    ------
+    TypeError
+        If `n` is not an integer.
+    ValueError
+        If `n` is negative.
+
+    Examples
+    --------
+    >>> fibonacci(0)
+    0
+    >>> fibonacci(1)
+    1
+    >>> fibonacci(10)
+    55
+    >>> fibonacci(20)
+    6765
+    """
+    # Input validation
+    if not isinstance(n, int) or isinstance(n, bool):
+        raise TypeError(f"n must be an integer, got {type(n).__name__}")
+    if n < 0:
+        raise ValueError(f"n must be non-negative, got {n}")
+
+    # Base cases
+    if
+----- pass1 prompt3 -----
+ERROR {'error': {'message': 'internal error: transient ring exhausted: more experts in one call than transient_slots', 'type': 'server_error', 'param': None, 'code': None}}
+----- pass1 prompt4 -----
+[7.16 tok/s, 261 tokens]
+# 素数が無限に存在することの証明
+
+## ユークリッドによる証明（背理法）
+
+**証明：**
+
+素数が有限個しかないと仮定し、それらをすべて \( p_1, p_2, \ldots, p_n \) とする。
+
+ここで次の数を考える：
+
+\[
+N = p_1 \cdot p_2 \cdots p_n + 1
+\]
+
+この \( N \) について考察する：
+
+1. **\( N > 1 \) なので、\( N \) は必ず何らかの素因数を持つ**（素因数分解の基本性質）。
+
+2. **しかし、\( N \) は仮定したどの素数 \( p_i \) でも割り切れない。**
+   - なぜなら、\( N \) を \( p_i \) で割ると必ず余り \( 1 \) になるからである。
+
+3. これは矛盾である。なぜなら、\( N \) の素因数は仮定した素数リスト \( p_1, \ldots, p_n \) のいずれかでなければならないのに、どれでも割り切れないからである。
+
+**結論：** 素数が有限個であるという仮定
+----- pass1 prompt5 -----
+ERROR {'error': {'message': 'internal error: transient ring exhausted: more experts in one call than transient_slots', 'type': 'server_error', 'param': None, 'code': None}}
+----- pass2 prompt1 -----
+[7.33 tok/s, 234 tokens]
+日本の四季は、それぞれ異なる気候と行事で彩られています。
+
+春は3月から5月頃で、寒さがゆるみ桜が咲き誇ります。代表的な行事は花見で、入学式や卒業式もこの時期に行われます。
+
+夏は6月から8月頃で、高温多湿となります。6月は梅雨で雨が多く、7月から8月は猛暑となります。代表的な行事は各地の夏祭りや花火大会、お盆です。
+
+秋は9月から11月頃で、涼しく過ごしやすい気候となります。紅葉が美しく、代表的な行事は月見や紅葉狩り、文化祭などです。
+
+冬は12月から2月頃で、寒さが厳しくなり、日本海側では雪が多く降ります。代表的な行事は正月、節分、クリスマスなどです。
+
+このように日本の四季は、気候の変化とともに多様な行事が行われ、日本の文化や生活に深く根付いています。
+----- pass2 prompt2 -----
+[5.45 tok/s, 260 tokens]
+```python
+def fibonacci(n):
+    """
+    Return the n-th Fibonacci number using an iterative approach.
+
+    The Fibonacci sequence is defined as:
+        F(0) = 0
+        F(1) = 1
+        F(n) = F(n-1) + F(n-2) for n >= 2
+
+    Parameters
+    ----------
+    n : int
+        The index of the Fibonacci number to compute. Must be a non-negative
+        integer.
+
+    Returns
+    -------
+    int
+        The n-th Fibonacci number.
+
+    Raises
+    ------
+    TypeError
+        If `n` is not an integer.
+    ValueError
+        If `n` is negative.
+
+    Examples
+    --------
+    >>> fibonacci(0)
+    0
+    >>> fibonacci(1)
+    1
+    >>> fibonacci(10)
+    55
+    >>> fibonacci(20)
+    6765
+    """
+    # Input validation
+    if not isinstance(n, int) or isinstance(n, bool):
+        raise TypeError(f"n must be an integer, got {type(n).__name__}")
+    if n < 0:
+        raise ValueError(f"n must be non-negative, got {n}")
+
+    # Base cases
+    if
+----- pass2 prompt3 -----
+ERROR {'error': {'message': 'internal error: transient ring exhausted: more experts in one call than transient_slots', 'type': 'server_error', 'param': None, 'code': None}}
+----- pass2 prompt4 -----
+[7.27 tok/s, 261 tokens]
+# 素数が無限に存在することの証明
+
+## ユークリッドによる証明（背理法）
+
+**証明：**
+
+素数が有限個しかないと仮定し、それらをすべて \( p_1, p_2, \ldots, p_n \) とする。
+
+ここで次の数を考える：
+
+\[
+N = p_1 \cdot p_2 \cdots p_n + 1
+\]
+
+この \( N \) について考察する：
+
+1. **\( N > 1 \) なので、\( N \) は必ず何らかの素因数を持つ**（素因数分解の基本性質）。
+
+2. **しかし、\( N \) は仮定したどの素数 \( p_i \) でも割り切れない。**
+   - なぜなら、\( N \) を \( p_i \) で割ると必ず余り \( 1 \) になるからである。
+
+3. これは矛盾である。なぜなら、\( N \) の素因数は仮定した素数リスト \( p_1, \ldots, p_n \) のいずれかでなければならないのに、どれでも割り切れないからである。
+
+**結論：** 素数が有限個であるという仮定
+----- pass2 prompt5 -----
+ERROR {'error': {'message': 'internal error: transient ring exhausted: more experts in one call than transient_slots', 'type': 'server_error', 'param': None, 'code': None}}
+##### EXPERT_FORMAT=cb3 (warm start 296s) #####
+----- pass1 prompt1 -----
+[4.00 tok/s, 261 tokens]
+日本は四季が明確に分かれており、それぞれの季節に特有の気候と行事があります。
+
+春（3月～5月）は、寒さが緩み暖かくなり、桜が咲く季節です。代表的な行事として、花見や端午の節句（5月5日）があります。花見では桜の下で食事や酒を楽しみ、端午の節句では鯉のぼりを掲げ、柏餅を食べて子どもの成長を祝います。
+
+夏（6月～8月）は高温多湿で、梅雨を経て本格的な暑さが到来します。代表的な行事として、七夕（7月7日）や盂蘭盆会（お盆、8月中旬）があります。七夕では短冊に願いを書き、笹に飾ります。お盆では祖先の霊を迎え、供養します。また、各地で夏祭りや花火大会が開催されます。
+
+秋（9月～11月）は涼しく爽やかで、紅葉が美しい季節です。代表的な行事として、中秋の名月（9月～10月）や七五三（11月
+----- pass1 prompt2 -----
+[2.27 tok/s, 261 tokens]
+# Fibonacci Number (Iterative)
+
+```python
+def fibonacci(n: int) -> int:
+    """
+    Return the n-th Fibonacci number using an iterative approach.
+
+    The Fibonacci sequence is defined as:
+        F(0) = 0
+        F(1) = 1
+        F(n) = F(n-1) + F(n-2) for n >= 2
+
+    Parameters
+    ----------
+    n : int
+        The index of the Fibonacci number to compute. Must be a
+        non-negative integer (n >= 0).
+
+    Returns
+    -------
+    int
+        The n-th Fibonacci number.
+
+    Raises
+    ------
+    TypeError
+        If `n` is not an integer.
+    ValueError
+        If `n` is negative.
+
+    Examples
+    --------
+    >>> fibonacci(0)
+    0
+    >>> fibonacci(1)
+    1
+    >>> fibonacci(10)
+    55
+    >>> fibonacci(20)
+    6765
+
+    Notes
+    -----
+    This implementation runs in O(n) time and O(1) space, which is
+    significantly more efficient than the naive recursive approach
+    (which runs in O(2^n) time).
+    """
+    # --- Input validation
+----- pass1 prompt3 -----
+[1.21 tok/s, 25 tokens]
+The committee postponed its decision until the financial audit is completed, citing concerns about transparency and the reliability of the reported figures.
+----- pass1 prompt4 -----
+[3.57 tok/s, 261 tokens]
+# 素数が無限に存在することの証明
+
+## 証明（背理法）
+
+**仮定：** 素数が有限個しかないと仮定し、それらを $p_1, p_2, \ldots, p_n$ とする。
+
+**構成：** 次の数を考える。
+
+$$N = p_1 p_2 \cdots p_n + 1$$
+
+**矛盾の導出：**
+
+- $N$ は仮定により、どの素数 $p_i$ でも割り切れない。なぜなら $N$ を $p_i$ で割ると余りが 1 になるからである。
+- しかし $N > 1$ なので、$N$ は素数であるか、または素数で割り切れる合成数である（算術の基本定理）。
+- どちらの場合も、$N$ を割り切る素数が存在することになる。
+- これは「素数は $p_1, \ldots, p_n$ だけ」という仮定に矛盾する。
+
+**結論：** 素数は無限に存在する。∎
+
+## 証明の要点
+
+1. **背理法**：素数が有限個
+----- pass1 prompt5 -----
+[2.57 tok/s, 185 tokens]
+Mixture-of-Experts (MoE) models are harder to serve than dense models of comparable quality because they trade compute efficiency for memory and communication overhead. A dense model activates all its parameters for every token, making inference predictable and cache-friendly. An MoE model, by contrast, routes each token to only a few experts out of many, so the full parameter set must still reside in memory even though only a fraction is used per token. This creates a large memory footprint relative to active compute, forcing expensive multi-GPU deployments. Routing also introduces dynamic, data-dependent computation: different tokens hit different experts, causing load imbalance, synchronization stalls, and all-to-all communication across devices. Batching becomes harder because experts receive variable token counts. Consequently, MoE serving demands careful parallelism, expert placement, and load balancing, making it significantly more complex and less efficient to operate at scale than a dense model of similar quality.
+----- pass2 prompt1 -----
+[3.80 tok/s, 260 tokens]
+日本は四季が明確に分かれており、それぞれの季節に特有の気候と行事があります。
+
+春（3月～5月）は、寒さが緩み暖かくなり、桜が咲く季節です。代表的な行事として、花見や端午の節句があります。人々は桜の下で集まり、春の訪れを祝います。
+
+夏（6月～8月）は、高温多湿で、梅雨を経て本格的な暑さが到来します。代表的な行事として、七夕や盂蘭盆会、夏祭りがあります。花火大会や盆踊りが各地で行われ、夏の風物詩となります。
+
+秋（9月～11月）は、暑さが和らぎ、紅葉が美しい季節です。代表的な行事として、中秋の名月や七五三があります。月見や紅葉狩りが行われ、実りの秋を楽しみます。
+
+冬（12月～2月）は、寒さが厳しく、雪が降る地域もあります。代表的な行事として、クリスマスや正月、節分があります。年末年始には家族が集まり、新年を祝います
+----- pass2 prompt2 -----
+[2.30 tok/s, 261 tokens]
+# Fibonacci Number (Iterative)
+
+```python
+def fibonacci(n: int) -> int:
+    """
+    Return the n-th Fibonacci number using an iterative approach.
+
+    The Fibonacci sequence is defined as:
+        F(0) = 0
+        F(1) = 1
+        F(n) = F(n-1) + F(n-2) for n >= 2
+
+    Parameters
+    ----------
+    n : int
+        The index of the Fibonacci number to compute. Must be a
+        non-negative integer (n >= 0).
+
+    Returns
+    -------
+    int
+        The n-th Fibonacci number.
+
+    Raises
+    ------
+    TypeError
+        If `n` is not an integer.
+    ValueError
+        If `n` is negative.
+
+    Examples
+    --------
+    >>> fibonacci(0)
+    0
+    >>> fibonacci(1)
+    1
+    >>> fibonacci(10)
+    55
+    >>> fibonacci(20)
+    6765
+
+    Notes
+    -----
+    This implementation runs in O(n) time and O(1) space, which is
+    significantly more efficient than the naive recursive approach
+    (which runs in O(2^n) time).
+    """
+    # --- Input validation
+----- pass2 prompt3 -----
+[1.21 tok/s, 25 tokens]
+The committee postponed its decision until the financial audit is completed, citing concerns about transparency and the reliability of the reported figures.
+----- pass2 prompt4 -----
+[3.73 tok/s, 261 tokens]
+# 素数が無限に存在することの証明
+
+## 証明（背理法）
+
+**仮定：** 素数が有限個しかないと仮定し、それらを $p_1, p_2, \ldots, p_n$ とする。
+
+**構成：** 次の数を考える。
+
+$$N = p_1 p_2 \cdots p_n + 1$$
+
+**矛盾の導出：**
+
+- $N$ は仮定により、どの素数 $p_i$ でも割り切れない。なぜなら $N$ を $p_i$ で割ると余りが 1 になるからである。
+- しかし $N > 1$ なので、$N$ は素数であるか、または素数で割り切れる合成数である（算術の基本定理）。
+- どちらの場合も、$N$ を割り切る素数が存在することになる。
+- これは「素数は $p_1, \ldots, p_n$ だけ」という仮定に矛盾する。
+
+**結論：** 素数は無限に存在する。∎
+
+## 証明の要点
+
+1. **背理法**：素数が有限個
+----- pass2 prompt5 -----
+[2.61 tok/s, 185 tokens]
+Mixture-of-Experts (MoE) models are harder to serve than dense models of comparable quality because they trade compute efficiency for memory and communication overhead. A dense model activates all its parameters for every token, making inference predictable and cache-friendly. An MoE model, by contrast, routes each token to only a few experts out of many, so the full parameter set must still reside in memory even though only a fraction is used per token. This creates a large memory footprint relative to active compute, forcing expensive multi-GPU deployments. Routing also introduces dynamic, data-dependent computation: different tokens hit different experts, causing load imbalance, synchronization stalls, and all-to-all communication across devices. Batching becomes harder because experts receive variable token counts. Consequently, MoE serving demands careful parallelism, expert placement, and load balancing, making it significantly more complex and less efficient to operate at scale than a dense model of similar quality.
+GENAB DONE

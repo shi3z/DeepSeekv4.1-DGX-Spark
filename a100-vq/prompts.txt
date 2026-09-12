@@ -1,0 +1,5 @@
+"日本の四季について、それぞれの季節の気候と代表的な行事を交えて400字程度で説明してください。"
+"Write a Python function that returns the n-th Fibonacci number iteratively, with a docstring and input validation."
+"次の文章を英語に翻訳してください：「委員会は、透明性と報告された数値の信頼性への懸念を理由に、財務監査が完了するまで決定を延期した。」"
+"素数が無限に存在することを証明し、その証明の要点を簡潔に説明してください。"
+"Explain in about 150 words why MoE models are harder to serve than dense models of the same quality."

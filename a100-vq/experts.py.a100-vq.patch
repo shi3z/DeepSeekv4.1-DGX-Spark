@@ -1,0 +1,20 @@
+--- a/engine/experts.py	2026-09-12 06:30:56.555586796 +0000
++++ b/engine/experts.py	2026-09-12 09:59:52.792734467 +0000
+@@ -326,6 +326,17 @@
+         first: the clone was a second 18.8 MB CPU memcpy per expert AND it made the H2D copy run
+         from pageable memory, which PyTorch has to stage through a bounce buffer of its own.
+         """
++        # a100-vq: a pre-packed CB3 store (a100-vq/pack_store.py) short-circuits both the FP4
++        # read and the FP4->CB3 pack for the experts it holds. Opt-in via DSV41_CB3_STORE.
++        if not hasattr(self, "cb3_store"):
++            import sys as _sys
++            _sys.path.insert(0, os.path.expanduser("~/dsv41-spark/a100-vq"))
++            import cb3_store as _cs
++            self.cb3_store = _cs.maybe_open(self.arena.device)
++            if self.cb3_store is not None:
++                print(f"[a100-vq] pre-packed CB3 store: {len(self.cb3_store.records)} experts", flush=True)
++        if self.cb3_store is not None and self.cb3_store.has(key):
++            return self.cb3_store.load(self.arena, slot, key, self._copy_stream())
+         stream = self._copy_stream()
+         compute = torch.cuda.current_stream()  # capture OUTSIDE the `with`, where it is still ours
+ 
