@@ -6,32 +6,45 @@ finished it says so instead of being estimated. The companion information-theore
 (rate-distortion of the FP4 experts, the PPL of each format over all 40 layers) was run on an
 8×A100 box and lives in `shi3z/deepseekv4.1-A100-custom`, branch `compression-study`.
 
-## The headline, with its condition attached
+## The headline
 
-Unpruned (every one of the 15,360 routed experts reachable), `ARENA_GB=94`, `DSV41_BLOCK=1`,
-greedy, 300 tokens, the same Japanese prompt three times:
+Unpruned -- every one of the 15,360 routed experts reachable -- `ARENA_GB=94`, `DSV41_BLOCK=1`,
+greedy. FP4 is this repo's streaming default, measured before the checkpoint's expert bytes were
+punched out; CB3 is the full 222 GB store (`results/full_bench.log`, `results/fp4ctl_bench.log`).
 
-| run | FP4 (this repo's streaming default) | CB3 + the pre-packed store |
+| | FP4 | CB3 + full store |
 |---|---|---|
-| 1 (cold arena) | 6.93 tok/s, 0.369 GB/tok, hit 0.9289 | 4.04, 0.116, 0.9426 |
-| 2 | 9.13, 0.233, 0.9585 | 8.33, 0.036, 0.985 |
-| **3** | **9.71, 0.213, 0.9625** | **18.28, 0.003, 1.000** |
+| same prompt, run 1 / 2 / 3 | 6.93 / 9.13 / **9.71** tok/s | 9.09 / 14.16 / **18.37** tok/s |
+| five different prompts, steady pass | 7.33 / 5.45 / err / 7.27 / err | **9.35 / 7.41 / 4.57 / 9.42 / 7.57** |
+
+**+89 % on a repeated prompt, +28-36 % on the three diverse prompts FP4 could serve**, and the two
+it could not -- FP4 fails them with `transient ring exhausted: more experts in one call than
+transient_slots`, a limit the CB3 arena does not reach because it misses less during prefill.
 
 FP4 plateaus at hit 0.9625: 94 GB is 5,000 FP4 slots and the working set does not fit. The same
-94 GB is 6,500 CB3 slots, the working set does fit, and NVMe traffic goes to nothing.
+94 GB is 6,500 CB3 slots, so it does.
 
-**And the condition matters.** With five *different* prompts rotating (ja prose, Python,
-translation, a proof, an English essay), so the LRU never settles:
+A partial store (6,087 experts, trace ranks 6,500-12,587) was **not** enough: it gave the same
+18.28 tok/s on the repeated prompt but 1.2-3.8 tok/s on the diverse one, because a miss outside the
+band still paid the FP4 read and the 20.8 ms pack. Covering all 15,360 is what makes it
+unconditional.
 
-| | FP4 | CB3 + store |
-|---|---|---|
-| per-prompt decode | 5.4–7.3 tok/s | **1.2–3.8 tok/s** |
+## Making room without breaking the checkpoint
 
-The store covers trace ranks 6,500–12,587 (6,087 experts, 88 GB — what the 916 GB disk had room
-for). A miss outside that band still pays the FP4 read *and* the 20.8 ms/expert GPU pack, and a
-rotating workload produces many of them. **This configuration is a win for a warm, repetitive
-workload and currently a loss for a diverse one.** Packing all 15,360 experts (222 GB) is what
-would make it unconditional; the box has 33 GB free with the FP4 checkpoint in place.
+The full store is 222 GB and the disk had 33 GB free. The shards cannot be deleted: of their
+510.3 GB the routed experts are 288.8 GB, but the other 214.3 GB -- **203.1 GB of it the Engram
+tables**, plus the dense/attention/head weights and the 384 DSpark draft experts -- lives in the
+same files and is read every step.
+
+`punch_fp4.py` frees the expert blocks with `fallocate --punch-hole` instead, leaving every other
+tensor at its original offset so nothing that reads the checkpoint has to change. Three rules keep
+it safe: only `layers.<n>.ffn.experts.<e>.*` (never `mtp.*`, whose draft experts stay FP4), only
+experts already in a store, and the range is aligned **inward** to 4096 because safetensors packs
+tensors 8-byte aligned and a partial edge block can hold a neighbour's bytes. It records what it
+punched, and the engine patch raises on a miss for a punched expert that is not in a store rather
+than feeding the model zeros.
+
+Result: the shards still measure 476 GB apparent, 207 GB physical; 222 GB of stores; 176 GB free.
 
 ## Why the obvious version does not work
 
@@ -64,8 +77,9 @@ One fixed-stride record per expert: the 12 slot tensors of `cb3_moe.CB3ArenaV2` 
 H2D slice copies — no alignment slack, no fill. A sidecar JSON carries the stride, the piece
 offsets and the `(layer, expert) → record` map.
 
-Built on the box itself, in the engine's own `rank_from_trace` order, resumable:
-**6,087 experts / 88.0 GB / 8.2 min** (`results/pack.log`). Packing locally beats shipping a store
+Built on the box itself, in the engine's own `rank_from_trace` order, resumable, in three batches
+interleaved with punching so the disk never had to hold both: **15,360 experts / 222.0 GB / 30 min**
+(`results/pack*.log`). Packing locally beats shipping a store
 in: the link to the A100 box measured 95 MB/s, so 88 GB would be 15.4 minutes of transfer plus the
 remote pack, and neither box has 222 GB free to stage a full one.
 
@@ -108,7 +122,9 @@ in a 4096-entry table (8 kB, or 16 kB padded to u32 to avoid bank conflicts).
 
 * Teacher-forced NLL on `corpus/heldout_corpus.jsonl` for these configurations. Attempted; one arm
   ran 41 minutes under streaming without finishing and was stopped. `tf_eval.sh` is the script.
-* Anything about a store that covers all 15,360 experts — the disk did not have room.
+* The store's own NVMe traffic: `cb3_store.py` serves a miss without going through the engine's
+  accounting, so `nvme_gb_per_token` reads 0.000 in the full-store rows even though misses happen
+  (hit 0.82-0.95 on the diverse prompts).
 * The VQ decode kernel. The quality numbers above come from simulating the format inside the FP4
   arena (the codebook entries are four E2M1 codes, so a quantised expert is still a valid FP4
   tensor and scores on the unmodified kernels); no packed VQ format or kernel exists yet.

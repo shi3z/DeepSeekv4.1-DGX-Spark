@@ -29,7 +29,7 @@ ALIGN = 4096
 
 
 class CB3Store:
-    def __init__(self, path: str, device):
+    def __init__(self, path: str, device, punched_path: str = ""):
         meta = json.load(open(path + ".json"))
         assert meta["format"] == "cb3_v2", meta["format"]
         self.stride = int(meta["stride"])
@@ -40,6 +40,19 @@ class CB3Store:
         self.device = device
         self._tls = threading.local()
         self.n_hits = 0
+        # experts whose FP4 bytes were freed by a100-vq/punch_fp4.py: reading them would return
+        # zeros, so a miss on one that is NOT in the store has to fail loudly instead
+        self.punched = set()
+        if punched_path and os.path.exists(punched_path):
+            self.punched = {tuple(x) for x in json.load(open(punched_path))["punched"]}
+
+    def guard(self, key) -> None:
+        k = (int(key[0]), int(key[1]))
+        if k in self.punched:
+            raise RuntimeError(
+                f"expert {k} is not in the CB3 store but its FP4 bytes were punched out of the "
+                f"checkpoint; the store and models/fp4_punched.json disagree. Re-pack it with "
+                f"a100-vq/pack_store.py or restore the shard.")
 
     def has(self, key) -> bool:
         return (int(key[0]), int(key[1])) in self.records
@@ -71,11 +84,39 @@ class CB3Store:
 
 
 def maybe_open(device):
-    """CB3Store named by DSV41_CB3_STORE, or None."""
+    """CB3Store (or MultiStore) named by DSV41_CB3_STORE (colon separated), or None."""
     p = os.environ.get("DSV41_CB3_STORE", "")
     if not p:
         return None
     p = os.path.expanduser(p)
-    if not (os.path.exists(p + ".bin") and os.path.exists(p + ".json")):
+    stores = [x for x in p.split(":") if os.path.exists(x + ".bin") and os.path.exists(x + ".json")]
+    if not stores:
         return None
-    return CB3Store(p, device)
+    punched = os.environ.get("DSV41_FP4_PUNCHED", os.path.join(os.path.dirname(stores[0]),
+                                                               "fp4_punched.json"))
+    if len(stores) == 1:
+        return CB3Store(stores[0], device, punched)
+    return MultiStore([CB3Store(s, device) for s in stores], punched)
+
+
+class MultiStore:
+    """Several record files behind one interface, so a store can be extended without rewriting it."""
+
+    def __init__(self, stores, punched_path: str = ""):
+        self.stores = stores
+        self.records = {}
+        for st in stores:
+            for k in st.records:
+                self.records[k] = st
+        self.punched = set()
+        if punched_path and os.path.exists(punched_path):
+            self.punched = {tuple(x) for x in json.load(open(punched_path))["punched"]}
+
+    def has(self, key) -> bool:
+        return (int(key[0]), int(key[1])) in self.records
+
+    def guard(self, key) -> None:
+        CB3Store.guard(self, key)
+
+    def load(self, arena, slot: int, key, stream) -> int:
+        return self.records[(int(key[0]), int(key[1]))].load(arena, slot, key, stream)

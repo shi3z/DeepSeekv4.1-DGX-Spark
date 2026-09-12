@@ -1,0 +1,18 @@
+=== full store (warm start 96s) ===
+[a100-vq] pre-packed CB3 store: 15360 experts, 15360 punched out of the checkpoint
+--- A: same prompt x3 ---
+  run1   9.09 tok/s | accept  1.63 |  109.6 ms/tok | nvme 0.000 GB/tok | hit 0.9426
+  run2  14.16 tok/s | accept  1.64 |   70.4 ms/tok | nvme 0.000 GB/tok | hit 0.985
+  run3  18.37 tok/s | accept  1.64 |   54.3 ms/tok | nvme 0.000 GB/tok | hit 1.0
+--- B: five different prompts, two passes ---
+  runpass1-p1  18.60 tok/s | accept  1.64 |   53.6 ms/tok | nvme 0.000 GB/tok | hit 1.0
+  runpass1-p2   7.65 tok/s | accept  1.93 |  130.2 ms/tok | nvme 0.000 GB/tok | hit 0.902
+  runpass1-p3   4.68 tok/s | accept  1.92 |  205.2 ms/tok | nvme 0.000 GB/tok | hit 0.8221
+  runpass1-p4   9.65 tok/s | accept  1.76 |  103.2 ms/tok | nvme 0.000 GB/tok | hit 0.9401
+  runpass1-p5   7.35 tok/s | accept  1.61 |  135.2 ms/tok | nvme 0.000 GB/tok | hit 0.9292
+  runpass2-p1   9.35 tok/s | accept  1.64 |  106.5 ms/tok | nvme 0.000 GB/tok | hit 0.9466
+  runpass2-p2   7.41 tok/s | accept  1.93 |  134.4 ms/tok | nvme 0.000 GB/tok | hit 0.9035
+  runpass2-p3   4.57 tok/s | accept  1.92 |  210.2 ms/tok | nvme 0.000 GB/tok | hit 0.8221
+  runpass2-p4   9.42 tok/s | accept  1.76 |  105.7 ms/tok | nvme 0.000 GB/tok | hit 0.9401
+  runpass2-p5   7.57 tok/s | accept  1.61 |  131.4 ms/tok | nvme 0.000 GB/tok | hit 0.9292
+FULLBENCH DONE

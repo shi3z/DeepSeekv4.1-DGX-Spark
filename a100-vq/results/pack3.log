@@ -1,0 +1,15 @@
+using the fast fill (fp4_to_cb3_v2_fast)
+trace ranking: 15360 experts
+packing ranks 12587..15360 = 2773 experts, 40.1 GB, record stride 14,454,784 B
+  250/2773  3.6 GB  31s  (8.1 experts/s, eta 5.2 min)
+  500/2773  7.2 GB  67s  (7.4 experts/s, eta 5.1 min)
+  750/2773  10.8 GB  100s  (7.5 experts/s, eta 4.5 min)
+  1000/2773  14.5 GB  139s  (7.2 experts/s, eta 4.1 min)
+  1250/2773  18.1 GB  173s  (7.2 experts/s, eta 3.5 min)
+  1500/2773  21.7 GB  210s  (7.1 experts/s, eta 3.0 min)
+  1750/2773  25.3 GB  244s  (7.2 experts/s, eta 2.4 min)
+  2000/2773  28.9 GB  279s  (7.2 experts/s, eta 1.8 min)
+  2250/2773  32.5 GB  315s  (7.1 experts/s, eta 1.2 min)
+  2500/2773  36.1 GB  351s  (7.1 experts/s, eta 0.6 min)
+  2750/2773  39.8 GB  384s  (7.2 experts/s, eta 0.1 min)
+done: 2773 experts, 40.1 GB in 6.5 min -> /home/shi3z/dsv41-spark/models/cb3_store3.bin

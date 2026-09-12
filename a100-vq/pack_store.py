@@ -45,6 +45,7 @@ def main():
         "~/dsv41-spark/work/results/trace-full-20260910/stats/coverage.json"))
     ap.add_argument("--out", default=os.path.expanduser("~/dsv41-spark/models/cb3_store"))
     ap.add_argument("--skip", type=int, default=6500, help="experts the arena warm-starts with (not packed)")
+    ap.add_argument("--rank-hi", type=int, default=0, help="stop at this trace rank (0 = use --budget-gb)")
     ap.add_argument("--budget-gb", type=float, default=88.0)
     ap.add_argument("--fast", action="store_true", default=True)
     a = ap.parse_args()
@@ -60,7 +61,7 @@ def main():
 
     ranked = rank_from_trace(a.trace)
     print(f"trace ranking: {len(ranked)} experts", flush=True)
-    todo = ranked[a.skip:]
+    todo = ranked[a.skip:a.rank_hi] if a.rank_hi else ranked[a.skip:]
     stride = C3.CB3_BYTES_PER_SLOT
     n = min(len(todo), int(a.budget_gb * 1e9 // stride))
     todo = todo[:n]
