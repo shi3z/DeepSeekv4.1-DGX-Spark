@@ -9,12 +9,12 @@
 | forward vs the stock FP4 kernel on identical weights | **rel err 0.00001** |
 | forward vs a hand reference | **0.00164** (CB3 v2 scores 0.00166 on the same reference: bf16 rounding) |
 | up / down kernels separately | 0.00165 / 0.00157 |
-| speed, 6x6 decode | **1.020 ms** against CB3 v2's 0.639 and CB3 v3's (inline PTX) 0.495 |
+| speed, 6x6 decode | **0.707 ms** against CB3 v2's 0.663 and CB3 v3's (inline PTX) 0.522 |
 
-So the format and the kernel are right, and the kernel is **2x slower than the CB3 one it would
-replace**. At the engine's warm steady state (54.5 ms/tok, hit 1.000) the MoE dominates the step, so
-shipping this as-is would trade the +89 % speed win for the quality win. It needs the decode cost
-back before it is worth wiring in.
+So the format and the kernel are right, and after tuning the kernel is **level with CB3 v2 and ~35 %
+behind the inline-PTX v3 the engine actually runs**. At the engine's warm steady state (54.5 ms/tok,
+hit 1.000) the MoE dominates the step, so wiring this in today would still cost speed for the
+quality win -- less than it did, but not nothing.
 
 ### The bug that was in the way, and what it cost
 
@@ -34,14 +34,28 @@ being assembled from a wide load. That is where the 2x went: 16 narrow fetches p
 one wide load plus register splits. `fp4_moe`'s packed inline-asm decode was tried again once the
 layout was normal and came out *slower* (1.385 ms), so a 16-entry fp16 table is used instead.
 
-### Where the speed could come back
+### Getting the speed back: what worked and what did not
 
-The redundant per-byte index fetches are L1 hits but cost instructions. Options not yet tried:
-regrouping so a group's two bytes land at tile positions g and g+8 (then `we`/`wo` are concatenations
-rather than interleaves, and the k mapping `xk = 2 * arange(16)` still holds -- the group would cover
-k {2g, 2g+1, 2g+16, 2g+17}, which the near-independence of the source along k makes statistically
-equivalent); decoding the nibble arithmetically instead of through the table; and the usual
-(BN, num_warps, num_stages) sweep, which has not been done at all for this kernel.
+**The (BN, warps, stages) sweep was worth 1.5x** and is `sweep_vq12.py`. Inheriting CB3's table was
+badly wrong for this kernel: the tile now comes from narrow per-byte fetches rather than one wide
+load, which moves the optimum to a much smaller BN and a single warp.
+
+| | CB3's table | tuned | |
+|---|---|---|---|
+| up | (128, 4, 1) 3.066 ms | **(16, 1, 3) 1.458 ms** | 2.10x |
+| down | (128, 8, 2) 0.818 ms | **(64, 4, 2) 0.601 ms** | 1.36x |
+| whole forward | 1.020 ms | **0.707 ms** | 1.44x |
+
+Two decode variants were measured and **both lost** to the 16-entry fp16 table: `fp4_moe`'s packed
+inline asm, retried once the layout was normal, 1.385 ms; building the fp16 bit pattern
+arithmetically (`_e2m1_f16`, left in the file), 2.220 ms.
+
+Still untried, and the one structural idea left: regroup so a group's two bytes land at tile
+positions g and g+8 rather than 2g and 2g+1. Then `we`/`wo` are concatenations rather than
+interleaves, the k mapping `xk = 2 * arange(16)` still holds, and the group covers
+k {2g, 2g+1, 2g+16, 2g+17} -- statistically equivalent, since the source is near-independent along k
+(Markov-1 is worth 0.026 bit). That would let the tile come from one wide load again and should take
+back most of the remaining gap to v3.
 
 ## Why it should be worth finishing
 

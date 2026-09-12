@@ -50,22 +50,34 @@ def _grp_packed_vq(lo_ptr, hi_ptr, lut_ptr, BN: tl.constexpr):
 
 
 @triton.jit
+def _e2m1_f16(c):
+    """E2M1 nibble -> fp16, by building the bit pattern: no table, no inline asm.
+
+    code = s ee m.  e == 0 is the subnormal 0.5m; otherwise 2^(e-1) (1 + m/2), which in fp16 is
+    exponent field e + 14 and mantissa field m << 9.
+    """
+    e = (c >> 1) & 3
+    m = c & 1
+    bits = tl.where(e == 0, m * 0x3800, ((e + 14) << 10) | (m << 9)) | ((c & 8) << 12)
+    return bits.to(tl.uint16).to(tl.float16, bitcast=True)
+
+
+@triton.jit
 def _chunk_dot_lut(x_base, xk, mask_m, packed, scale_u8, tab_ptr):
     """`fp4_moe._chunk_dot` without its inline-asm decode.
 
-    `_fp4_decode` is `tl.inline_asm_elementwise(..., pack=4)`, which reads four elements out of one
-    32-bit register and therefore depends on the tile's register layout. CB3 hands it a tile derived
-    from a plain load; a tile built with `tl.interleave` is laid out differently and the asm reads
-    the wrong lanes -- silently, because `tl.store` of the same tile is still correct. A 16-entry
-    fp16 table indexed by the nibble has no such requirement.
+    `_fp4_decode` is `tl.inline_asm_elementwise(..., pack=4)`, whose four-elements-per-register PTX
+    depends on the tile's register layout; retried once this kernel's layout was made normal it was
+    still slower here, so the nibble goes through a 16-entry fp16 table instead.
     """
     xe = tl.load(x_base + xk, mask=mask_m, other=0.0).to(tl.float16)
     xo = tl.load(x_base + xk + 1, mask=mask_m, other=0.0).to(tl.float16)
     p8 = packed.to(tl.int32) & 0xFF
-    we = tl.load(tab_ptr + (p8 & 0xF))
-    wo = tl.load(tab_ptr + (p8 >> 4))
-    p = tl.dot(xe, tl.trans(we))
-    p = tl.dot(xo, tl.trans(wo), acc=p)
+    # a 16-entry fp16 table beats both alternatives here: fp4_moe's packed inline asm measured
+    # 1.385 ms and building the fp16 bit pattern arithmetically (`_e2m1_f16`, kept below for the
+    # record) 2.220 ms, against this version's 0.677
+    p = tl.dot(xe, tl.trans(tl.load(tab_ptr + (p8 & 0xF))))
+    p = tl.dot(xo, tl.trans(tl.load(tab_ptr + (p8 >> 4))), acc=p)
     return p * _ue8m0(scale_u8)[None, :]
 
 
@@ -162,6 +174,14 @@ def _vq_down_kernel(
     tl.store(y_ptr + row[:, None] * stride_y + offs_n[None, :], acc, mask=mask_m[:, None])
 
 
+# Tuned for this kernel rather than inherited from CB3: the tile now comes from narrow per-byte
+# fetches instead of one wide load, which moves the optimum to a smaller BN and fewer warps.
+# sweep_vq12.py, 6x6 decode: up (128, 4, 1) -> (16, 1, 3) is 2.10x, down (128, 8, 2) -> (64, 4, 2)
+# is 1.36x. Inheriting CB3's table would have left the kernel 2x slower than it needs to be.
+_VQ_UP_CFG = {16: (16, 1, 3), 32: (16, 1, 3), 64: (16, 1, 3)}
+_VQ_DOWN_CFG = {16: (64, 4, 2), 32: (64, 4, 2), 64: (64, 4, 2)}
+
+
 class VQ12Arena(CB3Arena):
     """CB3's tensors exactly (the `*_cb` planes go unused: the codebook is global)."""
 
@@ -202,8 +222,8 @@ def moe_forward_vq(x: torch.Tensor, slots: torch.Tensor, weights: torch.Tensor, 
     T, K = slots.shape
     P = T * K
     BM = block_m or _pick_bm(P)
-    bn1, nw1, ns1 = cfg_up or C3._UP_CFG[BM]
-    bn2, nw2, ns2 = cfg_down or C3._DOWN_CFG[BM]
+    bn1, nw1, ns1 = cfg_up or _VQ_UP_CFG[BM]
+    bn2, nw2, ns2 = cfg_down or _VQ_DOWN_CFG[BM]
     block_slot, block_pair, NB = build_routing(slots, arena.slots, BM)
     wgt = weights.reshape(-1)
     if wgt.dtype != torch.float32 or not wgt.is_contiguous():
