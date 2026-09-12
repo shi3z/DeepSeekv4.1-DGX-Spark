@@ -86,6 +86,50 @@ reads ~16 unique experts and not 6, and why lengthening the block costs bytes at
 unexploited token-direction parallelism left; the DSpark head runs its own three MTP layers, not
 the forty backbone ones, so a drafted token id says nothing further about backbone routing.
 
+## Would AQLM at 2 bits change this?
+
+It is the right target — smaller experts mean fewer NVMe bytes per miss *and* more of them resident,
+and at 2.25 bpw the arena would hold 9,447 experts instead of 4,935, which the coverage curve puts
+near 0.95 static coverage. That is a 4x cut in NVMe traffic, larger than anything else left.
+
+Three measured objections, and one that is only arithmetic.
+
+**The arithmetic first: 2 bits does not achieve full residency anyway.** 543.6 B expert weights at
+2.00 bpw is 136 GB and at 2.25 bpw is 153 GB, against ~97 GB of arena. The budget needs 1.43 bpw.
+"Fit the whole model in unified memory" is not on the table at 2 bits; what is on the table is a
+much better *streaming* configuration.
+
+**The latency-hiding argument does not hold here.** The claim is that on unified memory the LUT
+gather hides behind the memory wait. Measured, the kernels move *away* from the roofline as the
+format narrows — FP4 reaches 180 GB/s of its own bytes (77 % of the 234 GB/s ceiling), CB2 140
+(60 %), half-width CB2 110 (47 %). At 2 bits the kernel is already decode-bound, not memory-bound,
+and AQLM's decode (several codebook lookups summed per group, irregular gathers) is heavier than
+CB2's single PTX decode. There is nothing left to hide behind.
+
+**And the weights are already FP4.** `measure/rd_probe.py` measures what vector quantisation — the
+part of AQLM that needs no calibration — buys over a scalar codebook on real expert weights, as
+relative error against the dequantised FP4 the checkpoint stores:
+
+| | bits/weight | relative error |
+|---|---|---|
+| CB2-style (4 of the 16 FP4 grid levels per row) | 2.25 | 0.3752 |
+| free scalar k-means, 4 levels per row | 2.25 | 0.3645 |
+| VQ over pairs | 2.0 | 0.3447 |
+| VQ over 4-tuples | 2.0 | 0.3120 |
+| **VQ over 6-tuples** | **2.0** | **0.3048** |
+
+**Joint coding buys 1.23x, from 0.375 to 0.305.** The configuration that measured 2-of-4 factual
+prompts wrong sits at 0.375; 0.305 is the same regime. CB2 did not fail because it is a bad 2-bit
+scheme — 2 bits is the problem. The FP4 nibble stream is already at 3.89 of 4 bits of entropy;
+there is little structure left for a better coder to find.
+
+What this does *not* measure is AQLM's calibration, which weights the error by its effect on the
+output rather than on the weights, and can beat a reconstruction-error argument. So this is a lower
+bound, not a refutation. It is a lower bound of 1.23x on a starting point that is already broken,
+against a calibration cost of days to weeks on 8 A100s for 543.6 B weights in 46,080 independent
+matrices, plus writing a decode kernel that the table above says will be slower per byte than the
+one it replaces. Not recommended without stronger evidence than a 1.23x floor.
+
 ## Where the time goes
 
 Measured on the unpruned path at block 5, 164 ms per output token:

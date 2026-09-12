@@ -55,6 +55,7 @@ Full numbers, methods and the tools in [docs/streaming-decode.md](docs/streaming
 | a better eviction policy | **0 %** of misses were used in the previous 32 steps; the LRU has no headroom left |
 | history-based prefetch | **91.2 %** of misses were never seen in a 64-step window |
 | token-conditioned prefetch | 13.4 % recall on all routing slots (8.6x chance) but **0.68 % on misses** — *below* chance |
+| AQLM-style 2-bit experts | vector quantisation buys **1.23x** lower error (0.375 → 0.305) before calibration, and 0.375 is where 2 of 4 prompts already fail |
 
 The last one closes the whole prefetch direction, and the reason is structural rather than
 incidental: a predictor of "what this context usually routes to" names the frequently-routed

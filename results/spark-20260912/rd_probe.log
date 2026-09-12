@@ -1,0 +1,12 @@
+tensor            CB2-style   free 1D   VQ pair   VQ quad  VQ 6-tup
+                   2.25 bpw  2.25 bpw   2.0 bpw   2.0 bpw   2.0 bpw
+L00.e0.w1            0.3742    0.3654    0.3484    0.3133    0.3056   (3s)
+L20.e5.w1            0.3750    0.3645    0.3464    0.3107    0.3044   (2s)
+L39.e2.w2            0.3764    0.3635    0.3392    0.3119    0.3045   (2s)
+
+mean                 0.3752    0.3645    0.3447    0.3120    0.3048
+
+  free scalar vs the FP4-grid codebook : 1.03x lower error
+  6-tuple VQ vs the FP4-grid codebook  : 1.23x lower error
+  6-tuple VQ vs free scalar            : 1.20x lower error   <- this is the part
+       AQLM's vector quantisation buys before any calibration or residual codebook.
