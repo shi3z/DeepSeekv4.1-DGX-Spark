@@ -288,9 +288,15 @@ class V41Engine:
             self._tier_fp4_share = float(os.environ.get("DSV41_TIER_FP4_SHARE", "0.40"))
             self._tier_sims = {self._tier_cold_fmt: CodebookSim(int(self._tier_cold_fmt[-1]), device)}
             tiered_moe_fn = TM.moe_forward_tiered
-            self.kernel = f"triton-tiered(fp4+{self._tier_cold_fmt})"
-            log(f"using the tiered MoE arena: fp4 share {self._tier_fp4_frac:.2f} of the byte budget, "
-                f"cold tier {self._tier_cold_fmt}, the rest streamed from NVMe at FP4")
+            self.kernel = f"triton-tiered({self._tier_mode})"
+            if self._tier_mode == "allres":
+                log(f"using the tiered MoE arena, all-resident: every routed expert stays in the "
+                    f"arena, the hottest at the checkpoint's FP4, the tail at 2 bits over "
+                    f"{self._tier_inter_h} of 2304 intermediate channels "
+                    f"(fp4 share {self._tier_fp4_share:.2f} of the headroom). Nothing streams.")
+            else:
+                log(f"using the tiered MoE arena, streaming: fp4 share {self._tier_fp4_frac:.2f} of "
+                    f"the byte budget, cold tier {self._tier_cold_fmt}, the rest read from NVMe at FP4")
         if self.expert_format == "cb3":
             import cb3_moe as C3
             from engine.codebook_sim import CodebookSim

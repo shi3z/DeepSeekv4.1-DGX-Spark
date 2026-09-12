@@ -166,6 +166,30 @@ every routed expert is resident (15360 slots): the decode path never touches NVM
 more faithful and slower (an FP4 expert is 105 µs against the tail's 31); spending none of it is
 the fast end. Every setting keeps all 15,360 experts reachable.
 
+### Talking to it
+
+`start.sh` brings up the OpenAI-compatible server from upstream; `measure/chat.py` is a
+standard-library terminal client for it.
+
+```bash
+EXPERT_FORMAT=tiered DSV41_TIER_MODE=allres \
+DSV41_TIER_INTER_H=768 DSV41_TIER_FP4_SHARE=0.8 \
+ARENA_GB=88 TRANSIENT_SLOTS=8 KEEP_FREE_GB=12 MAX_SEQ=8192 PORT=8100 ./start.sh --no-wait
+
+python measure/chat.py --url http://127.0.0.1:8100
+```
+
+`chat.py` waits for `/health` on its own — the expert arena fills before the port opens, which
+takes about four minutes for the all-resident plan — then streams, keeps the conversation, and
+prints each reply's `x_engine_stats` underneath it: decode tok/s, **the acceptance length it was
+achieved at**, TTFT and the expert hit rate. `/think on` puts it in reasoning mode and the
+`reasoning_content` stream is shown separately. Any OpenAI client works against the same endpoint.
+
+An interactive server wants more headroom than a benchmark: a long prompt's prefill allocates more
+than a decode step, and this box stops being able to fork `sshd` if `MemAvailable` reaches zero.
+`ARENA_GB=88` leaves ~13 GB free and still holds every expert — it only moves the FP4 tier from
+2,206 experts to 1,903.
+
 ### Measuring it yourself
 
 ```bash
