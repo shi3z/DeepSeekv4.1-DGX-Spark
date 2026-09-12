@@ -1,17 +1,47 @@
 # VQ12 — the 3-bit format that halves CB3's damage. **The kernel does not work yet.**
 
-## Status, plainly
+## Status
 
-| piece | state |
+**Correct. Not yet fast enough.**
+
+| | |
 |---|---|
-| the format and its packer (`vq12.py`) | **works**, verified |
-| the codebook (`vq_3.0.npz`, trained on the A100) | **works** |
-| the Triton decode (`_grp_packed_vq`) | **byte-exact** against `vq12.unpack` at BN = 16/32/64/128 |
-| speed of the whole kernel | **0.464 ms** at 6x6 decode against CB3 v2's 0.633 and CB3 v3's (inline PTX) 0.522 |
-| the end-to-end MoE forward | **WRONG** — rel err 1.94 against both a hand reference and the stock FP4 kernel on identical weights |
+| forward vs the stock FP4 kernel on identical weights | **rel err 0.00001** |
+| forward vs a hand reference | **0.00164** (CB3 v2 scores 0.00166 on the same reference: bf16 rounding) |
+| up / down kernels separately | 0.00165 / 0.00157 |
+| speed, 6x6 decode | **1.020 ms** against CB3 v2's 0.639 and CB3 v3's (inline PTX) 0.495 |
 
-So the idea and the pieces check out and the kernel is *faster* than the PTX CB3 one, but something
-structural in `moe_forward_vq` is wrong and is not yet localised. **Do not use this path.**
+So the format and the kernel are right, and the kernel is **2x slower than the CB3 one it would
+replace**. At the engine's warm steady state (54.5 ms/tok, hit 1.000) the MoE dominates the step, so
+shipping this as-is would trade the +89 % speed win for the quality win. It needs the decode cost
+back before it is worth wiring in.
+
+### The bug that was in the way, and what it cost
+
+The first version built each scale group's byte tile by looking the 8 group indices up once and
+`tl.interleave`-ing the entry's two bytes into 16. That produces the **right values** -- storing the
+tile and comparing against `vq12.unpack` matches 100 % at BN = 16/32/64/128 -- but a register layout
+`tl.dot` reads wrongly. The proof is `test_layout.py`: the same tile, same dot, gives **1.678**
+straight from the registers that built it and **0.00000** after a round trip through memory.
+
+Three decode implementations (`tl.join`+`tl.reshape`, `tl.interleave`, and one avoiding
+`fp4_moe._fp4_decode`'s `pack=4` inline asm) all gave bit-identical wrong output, which is what
+finally pointed away from the decode and at the layout.
+
+The fix: build the tile from **loads and elementwise ops only** -- loads always produce a layout the
+dot accepts. Each output byte fetches its own group's index (`lo_ptr + j // 2`) instead of the tile
+being assembled from a wide load. That is where the 2x went: 16 narrow fetches per group instead of
+one wide load plus register splits. `fp4_moe`'s packed inline-asm decode was tried again once the
+layout was normal and came out *slower* (1.385 ms), so a 16-entry fp16 table is used instead.
+
+### Where the speed could come back
+
+The redundant per-byte index fetches are L1 hits but cost instructions. Options not yet tried:
+regrouping so a group's two bytes land at tile positions g and g+8 (then `we`/`wo` are concatenations
+rather than interleaves, and the k mapping `xk = 2 * arange(16)` still holds -- the group would cover
+k {2g, 2g+1, 2g+16, 2g+17}, which the near-independence of the source along k makes statistically
+equivalent); decoding the nibble arithmetically instead of through the table; and the usual
+(BN, num_warps, num_stages) sweep, which has not been done at all for this kernel.
 
 ## Why it should be worth finishing
 

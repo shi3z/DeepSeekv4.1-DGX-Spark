@@ -30,32 +30,23 @@ from fp4_moe import DIM, INTER, _chunk_dot, _pick_bm, _ue8m0, build_routing
 
 
 @triton.jit
-def _split8w(t, BN: tl.constexpr, W: tl.constexpr):
-    """[BN, 8W] -> eight contiguous [BN, W] tiles."""
-    a, b = _split2(t, BN, 4 * W)
-    a0, a1 = _split2(a, BN, 2 * W)
-    b0, b1 = _split2(b, BN, 2 * W)
-    t0, t1 = _split2(a0, BN, W)
-    t2, t3 = _split2(a1, BN, W)
-    t4, t5 = _split2(b0, BN, W)
-    t6, t7 = _split2(b1, BN, W)
-    return t0, t1, t2, t3, t4, t5, t6, t7
+def _grp_packed_vq(lo_ptr, hi_ptr, lut_ptr, BN: tl.constexpr):
+    """One scale group's packed-FP4 byte tile [BN, 16], built only from loads and elementwise ops.
 
-
-@triton.jit
-def _grp_packed_vq(Lk, Hm, lut_ptr, BN: tl.constexpr):
-    """One scale group's packed-FP4 byte tile [BN, 16] from its 8 index bytes and 4 nibble bytes.
-
-    Byte e of the output holds K offsets 2e (low nibble) and 2e+1 (high), which is what
-    `_chunk_dot` expects; a codebook entry is four E2M1 codes = exactly two such bytes.
+    The obvious construction -- look the 8 group indices up once and `tl.interleave` the entry's two
+    bytes into 16 -- produces the right VALUES (storing the tile proves it) but a register layout
+    `tl.dot` then reads wrongly: the same tile is exact after a round trip through memory and wrong
+    straight from the registers. Loads always produce a layout the dot accepts, so each output byte
+    fetches its own group's index instead: byte j belongs to group j // 2 and takes the entry's low
+    byte for even j, the high byte for odd. The redundant fetches are L1 hits.
     """
-    # & 0xFF because a uint8 tile converts to int32 sign-extended; CB3 never notices (it masks the
-    # result with & 3) but a 12-bit index uses the whole byte
-    h = Hm.to(tl.int32) & 0xFF
-    hn = tl.interleave(h & 15, (h >> 4) & 15)                     # [BN, 8] high nibbles
-    idx = (Lk.to(tl.int32) & 0xFF) | (hn << 8)                    # [BN, 8] entry 0..4095
-    v = tl.load(lut_ptr + idx)                                    # [BN, 8] the two bytes, packed
-    return tl.interleave(v & 0xFF, (v >> 8) & 0xFF).to(tl.uint8)
+    j = tl.arange(0, 16)[None, :]
+    g = j // 2                                     # the VQ group this output byte belongs to
+    lo = tl.load(lo_ptr + g).to(tl.int32) & 0xFF   # [BN, 16] group g's low 8 index bits
+    hb = tl.load(hi_ptr + (g // 2)).to(tl.int32) & 0xFF
+    hn = tl.where(g % 2 == 0, hb & 0xF, (hb >> 4) & 0xF)
+    v = tl.load(lut_ptr + (lo | (hn << 8)))        # [BN, 16] the entry's two packed bytes
+    return tl.where(j % 2 == 0, v & 0xFF, (v >> 8) & 0xFF).to(tl.uint8)
 
 
 @triton.jit
@@ -80,20 +71,16 @@ def _chunk_dot_lut(x_base, xk, mask_m, packed, scale_u8, tab_ptr):
 
 @triton.jit
 def _vq_block_dot(x_base, xk, mask_m, lo_ptr, hi_ptr, s_ptr, lut_ptr, tab_ptr, BN: tl.constexpr):
-    """256 logical K = 8 scale groups: 64 index bytes + 32 nibble bytes + 8 scale bytes per row."""
-    L = tl.load(lo_ptr)   # [BN, 64]
-    H = tl.load(hi_ptr)   # [BN, 32]
-    L0, L1, L2, L3, L4, L5, L6, L7 = _split8w(L, BN, 8)
-    H0, H1, H2, H3, H4, H5, H6, H7 = _split8w(H, BN, 4)
+    """256 logical K = 8 scale groups: 8 index bytes + 4 nibble bytes + 1 scale byte per group."""
     s0, s1, s2, s3, s4, s5, s6, s7 = _split8(tl.load(s_ptr), BN)
-    acc = _chunk_dot_lut(x_base, xk, mask_m, _grp_packed_vq(L0, H0, lut_ptr, BN), s0, tab_ptr)
-    acc += _chunk_dot_lut(x_base + 32, xk, mask_m, _grp_packed_vq(L1, H1, lut_ptr, BN), s1, tab_ptr)
-    acc += _chunk_dot_lut(x_base + 64, xk, mask_m, _grp_packed_vq(L2, H2, lut_ptr, BN), s2, tab_ptr)
-    acc += _chunk_dot_lut(x_base + 96, xk, mask_m, _grp_packed_vq(L3, H3, lut_ptr, BN), s3, tab_ptr)
-    acc += _chunk_dot_lut(x_base + 128, xk, mask_m, _grp_packed_vq(L4, H4, lut_ptr, BN), s4, tab_ptr)
-    acc += _chunk_dot_lut(x_base + 160, xk, mask_m, _grp_packed_vq(L5, H5, lut_ptr, BN), s5, tab_ptr)
-    acc += _chunk_dot_lut(x_base + 192, xk, mask_m, _grp_packed_vq(L6, H6, lut_ptr, BN), s6, tab_ptr)
-    acc += _chunk_dot_lut(x_base + 224, xk, mask_m, _grp_packed_vq(L7, H7, lut_ptr, BN), s7, tab_ptr)
+    acc = _chunk_dot_lut(x_base, xk, mask_m, _grp_packed_vq(lo_ptr, hi_ptr, lut_ptr, BN), s0, tab_ptr)
+    acc += _chunk_dot_lut(x_base + 32, xk, mask_m, _grp_packed_vq(lo_ptr + 8, hi_ptr + 4, lut_ptr, BN), s1, tab_ptr)
+    acc += _chunk_dot_lut(x_base + 64, xk, mask_m, _grp_packed_vq(lo_ptr + 16, hi_ptr + 8, lut_ptr, BN), s2, tab_ptr)
+    acc += _chunk_dot_lut(x_base + 96, xk, mask_m, _grp_packed_vq(lo_ptr + 24, hi_ptr + 12, lut_ptr, BN), s3, tab_ptr)
+    acc += _chunk_dot_lut(x_base + 128, xk, mask_m, _grp_packed_vq(lo_ptr + 32, hi_ptr + 16, lut_ptr, BN), s4, tab_ptr)
+    acc += _chunk_dot_lut(x_base + 160, xk, mask_m, _grp_packed_vq(lo_ptr + 40, hi_ptr + 20, lut_ptr, BN), s5, tab_ptr)
+    acc += _chunk_dot_lut(x_base + 192, xk, mask_m, _grp_packed_vq(lo_ptr + 48, hi_ptr + 24, lut_ptr, BN), s6, tab_ptr)
+    acc += _chunk_dot_lut(x_base + 224, xk, mask_m, _grp_packed_vq(lo_ptr + 56, hi_ptr + 28, lut_ptr, BN), s7, tab_ptr)
     return acc
 
 
@@ -121,10 +108,10 @@ def _vq_up_kernel(
     offs_n = nb * BN + tl.arange(0, BN)
     x_base = x_ptr + tok[:, None] * stride_x
     xk = 2 * tl.arange(0, 16)[None, :]
-    lo1 = lo1_ptr + slot * (N * KL) + offs_n[:, None] * KL + tl.arange(0, 64)[None, :]
-    hi1 = hi1_ptr + slot * (N * KH) + offs_n[:, None] * KH + tl.arange(0, 32)[None, :]
-    lo3 = lo3_ptr + slot * (N * KL) + offs_n[:, None] * KL + tl.arange(0, 64)[None, :]
-    hi3 = hi3_ptr + slot * (N * KH) + offs_n[:, None] * KH + tl.arange(0, 32)[None, :]
+    lo1 = lo1_ptr + slot * (N * KL) + offs_n[:, None] * KL
+    hi1 = hi1_ptr + slot * (N * KH) + offs_n[:, None] * KH
+    lo3 = lo3_ptr + slot * (N * KL) + offs_n[:, None] * KL
+    hi3 = hi3_ptr + slot * (N * KH) + offs_n[:, None] * KH
     s1t = s1_ptr + slot * (N * SG) + offs_n[:, None] * SG + tl.arange(0, 8)[None, :]
     s3t = s3_ptr + slot * (N * SG) + offs_n[:, None] * SG + tl.arange(0, 8)[None, :]
     acc_g = tl.zeros([BM, BN], dtype=tl.float32)
@@ -164,8 +151,8 @@ def _vq_down_kernel(
     offs_n = nb * BN + tl.arange(0, BN)
     h_base = h_ptr + offs_m[:, None].to(tl.int64) * stride_h
     xk = 2 * tl.arange(0, 16)[None, :]
-    lo2 = lo2_ptr + slot * (N * KL) + offs_n[:, None] * KL + tl.arange(0, 64)[None, :]
-    hi2 = hi2_ptr + slot * (N * KH) + offs_n[:, None] * KH + tl.arange(0, 32)[None, :]
+    lo2 = lo2_ptr + slot * (N * KL) + offs_n[:, None] * KL
+    hi2 = hi2_ptr + slot * (N * KH) + offs_n[:, None] * KH
     s2t = s2_ptr + slot * (N * SG) + offs_n[:, None] * SG + tl.arange(0, 8)[None, :]
     acc = tl.zeros([BM, BN], dtype=tl.float32)
     for b in range(0, K // 256):
