@@ -26,7 +26,7 @@ import triton.language as tl
 
 import cb3_moe as C3
 from cb3_moe import _split2, _split8, CB3Arena
-from fp4_moe import DIM, INTER, _chunk_dot, _pick_bm, build_routing
+from fp4_moe import DIM, INTER, _chunk_dot, _pick_bm, _ue8m0, build_routing
 
 
 @triton.jit
@@ -59,27 +59,47 @@ def _grp_packed_vq(Lk, Hm, lut_ptr, BN: tl.constexpr):
 
 
 @triton.jit
-def _vq_block_dot(x_base, xk, mask_m, lo_ptr, hi_ptr, s_ptr, lut_ptr, BN: tl.constexpr):
+def _chunk_dot_lut(x_base, xk, mask_m, packed, scale_u8, tab_ptr):
+    """`fp4_moe._chunk_dot` without its inline-asm decode.
+
+    `_fp4_decode` is `tl.inline_asm_elementwise(..., pack=4)`, which reads four elements out of one
+    32-bit register and therefore depends on the tile's register layout. CB3 hands it a tile derived
+    from a plain load; a tile built with `tl.interleave` is laid out differently and the asm reads
+    the wrong lanes -- silently, because `tl.store` of the same tile is still correct. A 16-entry
+    fp16 table indexed by the nibble has no such requirement.
+    """
+    xe = tl.load(x_base + xk, mask=mask_m, other=0.0).to(tl.float16)
+    xo = tl.load(x_base + xk + 1, mask=mask_m, other=0.0).to(tl.float16)
+    p8 = packed.to(tl.int32) & 0xFF
+    we = tl.load(tab_ptr + (p8 & 0xF))
+    wo = tl.load(tab_ptr + (p8 >> 4))
+    p = tl.dot(xe, tl.trans(we))
+    p = tl.dot(xo, tl.trans(wo), acc=p)
+    return p * _ue8m0(scale_u8)[None, :]
+
+
+@triton.jit
+def _vq_block_dot(x_base, xk, mask_m, lo_ptr, hi_ptr, s_ptr, lut_ptr, tab_ptr, BN: tl.constexpr):
     """256 logical K = 8 scale groups: 64 index bytes + 32 nibble bytes + 8 scale bytes per row."""
     L = tl.load(lo_ptr)   # [BN, 64]
     H = tl.load(hi_ptr)   # [BN, 32]
     L0, L1, L2, L3, L4, L5, L6, L7 = _split8w(L, BN, 8)
     H0, H1, H2, H3, H4, H5, H6, H7 = _split8w(H, BN, 4)
     s0, s1, s2, s3, s4, s5, s6, s7 = _split8(tl.load(s_ptr), BN)
-    acc = _chunk_dot(x_base, xk, mask_m, _grp_packed_vq(L0, H0, lut_ptr, BN), s0)
-    acc += _chunk_dot(x_base + 32, xk, mask_m, _grp_packed_vq(L1, H1, lut_ptr, BN), s1)
-    acc += _chunk_dot(x_base + 64, xk, mask_m, _grp_packed_vq(L2, H2, lut_ptr, BN), s2)
-    acc += _chunk_dot(x_base + 96, xk, mask_m, _grp_packed_vq(L3, H3, lut_ptr, BN), s3)
-    acc += _chunk_dot(x_base + 128, xk, mask_m, _grp_packed_vq(L4, H4, lut_ptr, BN), s4)
-    acc += _chunk_dot(x_base + 160, xk, mask_m, _grp_packed_vq(L5, H5, lut_ptr, BN), s5)
-    acc += _chunk_dot(x_base + 192, xk, mask_m, _grp_packed_vq(L6, H6, lut_ptr, BN), s6)
-    acc += _chunk_dot(x_base + 224, xk, mask_m, _grp_packed_vq(L7, H7, lut_ptr, BN), s7)
+    acc = _chunk_dot_lut(x_base, xk, mask_m, _grp_packed_vq(L0, H0, lut_ptr, BN), s0, tab_ptr)
+    acc += _chunk_dot_lut(x_base + 32, xk, mask_m, _grp_packed_vq(L1, H1, lut_ptr, BN), s1, tab_ptr)
+    acc += _chunk_dot_lut(x_base + 64, xk, mask_m, _grp_packed_vq(L2, H2, lut_ptr, BN), s2, tab_ptr)
+    acc += _chunk_dot_lut(x_base + 96, xk, mask_m, _grp_packed_vq(L3, H3, lut_ptr, BN), s3, tab_ptr)
+    acc += _chunk_dot_lut(x_base + 128, xk, mask_m, _grp_packed_vq(L4, H4, lut_ptr, BN), s4, tab_ptr)
+    acc += _chunk_dot_lut(x_base + 160, xk, mask_m, _grp_packed_vq(L5, H5, lut_ptr, BN), s5, tab_ptr)
+    acc += _chunk_dot_lut(x_base + 192, xk, mask_m, _grp_packed_vq(L6, H6, lut_ptr, BN), s6, tab_ptr)
+    acc += _chunk_dot_lut(x_base + 224, xk, mask_m, _grp_packed_vq(L7, H7, lut_ptr, BN), s7, tab_ptr)
     return acc
 
 
 @triton.jit
 def _vq_up_kernel(
-    x_ptr, lo1_ptr, hi1_ptr, s1_ptr, lo3_ptr, hi3_ptr, s3_ptr, h_ptr, lut_ptr,
+    x_ptr, lo1_ptr, hi1_ptr, s1_ptr, lo3_ptr, hi3_ptr, s3_ptr, h_ptr, lut_ptr, tab_ptr,
     wgt_ptr, block_slot_ptr, block_pair_ptr,
     stride_x, stride_h, limit,
     TOPK: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
@@ -111,9 +131,9 @@ def _vq_up_kernel(
     acc_u = tl.zeros([BM, BN], dtype=tl.float32)
     for b in range(0, K // 256):
         acc_g += _vq_block_dot(x_base + b * 256, xk, mask_m[:, None], lo1 + b * 64, hi1 + b * 32,
-                               s1t + b * 8, lut_ptr, BN)
+                               s1t + b * 8, lut_ptr, tab_ptr, BN)
         acc_u += _vq_block_dot(x_base + b * 256, xk, mask_m[:, None], lo3 + b * 64, hi3 + b * 32,
-                               s3t + b * 8, lut_ptr, BN)
+                               s3t + b * 8, lut_ptr, tab_ptr, BN)
     gate = tl.minimum(acc_g, limit)
     up = tl.minimum(tl.maximum(acc_u, -limit), limit)
     wgt = tl.load(wgt_ptr + offs_m, mask=mask_m, other=0.0)
@@ -123,7 +143,7 @@ def _vq_up_kernel(
 
 @triton.jit
 def _vq_down_kernel(
-    h_ptr, lo2_ptr, hi2_ptr, s2_ptr, y_ptr, lut_ptr,
+    h_ptr, lo2_ptr, hi2_ptr, s2_ptr, y_ptr, lut_ptr, tab_ptr,
     block_slot_ptr, block_pair_ptr,
     stride_h, stride_y,
     TOPK: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
@@ -150,7 +170,7 @@ def _vq_down_kernel(
     acc = tl.zeros([BM, BN], dtype=tl.float32)
     for b in range(0, K // 256):
         acc += _vq_block_dot(h_base + b * 256, xk, mask_m[:, None], lo2 + b * 64, hi2 + b * 32,
-                             s2t + b * 8, lut_ptr, BN)
+                             s2t + b * 8, lut_ptr, tab_ptr, BN)
     row = ((offs_m % TOPK) * NTOK + offs_m // TOPK).to(tl.int64)
     tl.store(y_ptr + row[:, None] * stride_y + offs_n[None, :], acc, mask=mask_m[:, None])
 
@@ -162,10 +182,13 @@ class VQ12Arena(CB3Arena):
         super().__init__(slots, device)
         self.vq = None      # a100-vq/vq12.py VQ12, set by the caller
         self.lut = None     # int32 [4096], entry -> the two packed-FP4 bytes
+        self.tab = None     # fp16 [16], the E2M1 grid
 
     def attach(self, vq):
         self.vq = vq
         self.lut = vq.lut.to(self.device).contiguous()
+        from vq12 import FP4_VALS
+        self.tab = FP4_VALS.to(self.device).to(torch.float16).contiguous()
         return self
 
     def load_slot(self, slot: int, w1, s1, w2, s2, w3, s3, non_blocking: bool = False, sim=None) -> None:
@@ -201,11 +224,11 @@ def moe_forward_vq(x: torch.Tensor, slots: torch.Tensor, weights: torch.Tensor, 
     h = torch.empty((P, INTER), dtype=torch.bfloat16, device=x.device)
     parts = torch.empty((P, DIM), dtype=torch.float32, device=x.device)
     _vq_up_kernel[(NB, INTER // bn1)](
-        x, arena.w1_lo, arena.w1_hi, arena.s1, arena.w3_lo, arena.w3_hi, arena.s3, h, arena.lut,
+        x, arena.w1_lo, arena.w1_hi, arena.s1, arena.w3_lo, arena.w3_hi, arena.s3, h, arena.lut, arena.tab,
         wgt, block_slot, block_pair, x.stride(0), h.stride(0), float(swiglu_limit),
         TOPK=K, N=INTER, K=DIM, BM=BM, BN=bn1, num_warps=nw1, num_stages=ns1)
     _vq_down_kernel[(NB, DIM // bn2)](
-        h, arena.w2_lo, arena.w2_hi, arena.s2, parts, arena.lut, block_slot, block_pair,
+        h, arena.w2_lo, arena.w2_hi, arena.s2, parts, arena.lut, arena.tab, block_slot, block_pair,
         h.stride(0), parts.stride(0), TOPK=K, N=DIM, K=INTER, BM=BM, BN=bn2, NTOK=T,
         num_warps=nw2, num_stages=ns2)
     return parts.view(K, T, DIM).sum(dim=0).to(torch.bfloat16)
