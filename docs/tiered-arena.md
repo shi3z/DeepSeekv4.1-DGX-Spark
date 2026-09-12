@@ -24,7 +24,7 @@ How all 15,360 routed experts are made to fit in ~97 GB, and why it is not worth
 meet. CB2 — two bits plus the UE8M0 scale, 2.25 bpw — is 153 GB for the set and does not meet it.
 Nothing in the upstream repository does.
 
-## Why coarse beats absent
+## Why coarse was expected to beat absent — and did not
 
 The upstream default meets the budget by keeping 31 % of the experts and removing the rest from the
 router. The failure mode that produces is not a noisier FFN. The router scores all 384 and takes the
