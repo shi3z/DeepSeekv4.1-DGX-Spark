@@ -76,7 +76,7 @@ on, CUDA graphs on, device slot LUT on. One run each.
 | DSpark acceptance | 4.30 | 4.44 |
 | NVMe read during decode | 0 GB | 0 GB |
 | expert hit rate | 1.000 | 1.000 |
-| prefill | 15.21 tok/s | **8.39 tok/s** |
+| prefill, 19-token prompt | 15.21 tok/s | **8.39 tok/s** |
 | load, process start to ready | 108 s | 314 s |
 
 **+21.9 % on decode, and nothing is dropped.** Acceptance is not identical between the rows, and
@@ -85,7 +85,9 @@ acceptance is the single biggest lever on this model's tok/s — upstream's own 
 experts. Correcting the row to the baseline's 4.30 gives 29.2 tok/s, still +18 %.
 
 **What is worse.** Prefill is 1.8x slower, because the CB2 and half-width kernels lose to FP4 at
-prefill shapes (upstream measured 2.3-6.7x for CB3 there). Upstream's FP4 path unpacks to a scratch
+prefill shapes (upstream measured 2.3-6.7x for CB3 there). The prompt those two rows were taken on
+is 19 tokens, which is short enough that fixed cost dominates the rate; a long-prompt TTFT
+comparison has not been taken, and the gap there could be larger. Upstream's FP4 path unpacks to a scratch
 arena and runs the FP4 kernel for prefill-sized calls; the tiered path does not do that yet. Warm
 start is 3x longer because all 15,360 experts are read and re-packed rather than 4,800 copied.
 
