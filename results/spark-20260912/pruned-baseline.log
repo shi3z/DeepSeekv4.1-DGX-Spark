@@ -1,0 +1,76 @@
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+03:00:12 [engine] using Triton FP4 MoE kernel
+03:01:26 [engine] weights: all non-expert weights on GPU in 74s
+03:01:27 [engine] CUDA free 4.7 GB of 130.6; host MemAvailable 105.9 GB; arena 90.5 GB = 4813 fp4 expert slots of 18.80 MB (31% of all routed experts, pinned)
+03:01:38 [engine] DSpark experts resident
+03:01:38 [engine] pruned mode: per-layer coding/general traces absent; ranking on the mixed histogram from coverage.json
+03:01:38 [engine] pruned mode (uniform): keep 0.31, 4800 experts total (120-120 per layer), 90.2 GB
+03:01:58 [engine] warm start done: 4800 experts resident (90.2 GB, 97.5 GB read) in 19s
+03:01:58 [engine] fast decode path enabled (CUDA graphs=True, device slot LUT=True)
+03:01:58 [engine] ready
+CONFIG {"arena_gb": 90.5, "arena_slots": 4813, "max_seq": 8192, "spec": true, "kernel": "triton-fp4", "expert_format": "fp4", "dense_fp4": "off", "prune_keep": 0.31}
+RESULT pruned-baseline: 203 tok in 9.44s = 21.49 tok/s | load 108s | acceptance 4.3 | hit 1.000 | NVMe 0.00 GB | distinct-token ratio 0.443
+STATS {"prompt_tokens": 19, "completion_tokens": 203, "prefill_s": 1.249, "prefill_tok_s": 15.21, "decode_s": 8.167, "decode_tok_s": 24.73, "steps": 47, "accept_len_mean": 4.3, "expert_hit_rate": 1.0, "expert_misses": 0, "prefill_expert_misses": 0, "nvme_gb": 0.0, "nvme_read_s": 0.0, "engram_rows": 14432, "engram_s": 2.22, "engram_read_s": 1.018, "attn_s": 0.07, "moe_s": 1.02, "route_s": 1.01, "load_wait_s": 0.0, "lease_s": 0.0, "h2d_s": 0.0, "kernel_s": 0.01, "nvme_gb_per_token": 0.0, "promoted": 0}
+---- text (code, ignore_eos) ----
+# Here's a Python function that returns the n-th Fibonacci number, along with tests.
+
+```python
+def fibonacci(n):
+    """
+    Return the n-th Fibonacci number.
+
+    Uses an iterative approach for O(n) time and O(1) space.
+
+    Convention: F(0) = 0, F(1) = 1, F(2) = 1, ...
+
+    Args:
+        n (int): Non-negative index of the Fibonacci number to compute.
+
+    Returns:
+        int: The n-th Fibonacci number.
+
+    Raises:
+        ValueError: If n is not a non-negative integer.
+    """
+    if not isinstance(n, int) or isinstance(n, bool):
+        raise ValueError("n must be an integer")
+    if n < 0:
+        raise ValueError("n must be a non-negative integer")
+
+    a, b = 0, 1
+    for _ in range(n):
+        a, b = b, a + b
+    return a
+---- end ----
+FREEGEN pruned-baseline: 203 tok, 22.86 tok/s, distinct-token ratio 0.443 
+---- text (natural stop) ----
+# Here's a Python function that returns the n-th Fibonacci number, along with tests.
+
+```python
+def fibonacci(n):
+    """
+    Return the n-th Fibonacci number.
+
+    Uses an iterative approach for O(n) time and O(1) space.
+
+    Convention: F(0) = 0, F(1) = 1, F(2) = 1, ...
+
+    Args:
+        n (int): Non-negative index of the Fibonacci number to compute.
+
+    Returns:
+        int: The n-th Fibonacci number.
+
+    Raises:
+        ValueError: If n is not a non-negative integer.
+    """
+    if not isinstance(n, int) or isinstance(n, bool):
+        raise ValueError("n must be an integer")
+    if n < 0:
+        raise ValueError("n must be a non-negative integer")
+
+    a, b = 0, 1
+    for _ in range(n):
+        a, b = b, a + b
+    return a
+---- end ----

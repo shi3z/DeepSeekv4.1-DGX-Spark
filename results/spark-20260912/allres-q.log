@@ -1,0 +1,83 @@
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+03:04:07 [engine] using Triton FP4 MoE kernel
+03:04:07 [engine] using the tiered MoE arena: fp4 share 0.30 of the byte budget, cold tier cb2, the rest streamed from NVMe at FP4
+03:05:23 [engine] weights: all non-expert weights on GPU in 76s
+03:05:28 [engine] tiered arena: 11872 cb2h @ 3.34 MB (39.7 GB) + 1282 cb2 @ 9.99 MB (12.8 GB) + 2214 fp4 @ 18.80 MB (41.6 GB) = 15368 slots (100.1 % of all routed experts resident)
+03:05:28 [engine] CUDA free 92.9 GB of 130.6; host MemAvailable 105.9 GB; arena 94.0 GB = 15368 tiered expert slots of 6.13 MB (100% of all routed experts, pinned)
+03:05:32 [engine] DSpark experts resident
+03:09:19 [engine] warm start done: 15360 experts resident (94.1 GB, 296.1 GB read) in 227s
+03:09:19 [engine] every routed expert is resident (15360 slots): the decode path never touches NVMe and the slot LUT is permanent
+03:09:19 [engine] fast decode path enabled (CUDA graphs=True, device slot LUT=True)
+03:09:19 [engine] ready
+CONFIG {"arena_gb": 94.0, "arena_slots": 15368, "max_seq": 8192, "spec": true, "kernel": "triton-tiered(fp4+cb2)", "expert_format": "tiered", "dense_fp4": "off", "prune_keep": null}
+RESULT allres-q: 201 tok in 8.96s = 22.44 tok/s | load 314s | acceptance 4.44 | hit 1.000 | NVMe 0.00 GB | distinct-token ratio 0.463
+STATS {"prompt_tokens": 19, "completion_tokens": 201, "prefill_s": 2.265, "prefill_tok_s": 8.39, "decode_s": 6.635, "decode_tok_s": 30.14, "steps": 45, "accept_len_mean": 4.44, "expert_hit_rate": 1.0, "expert_misses": 0, "prefill_expert_misses": 0, "nvme_gb": 0.0, "nvme_read_s": 0.0, "engram_rows": 13872, "engram_s": 1.856, "engram_read_s": 0.942, "attn_s": 0.07, "moe_s": 1.97, "route_s": 1.95, "load_wait_s": 0.0, "lease_s": 0.0, "h2d_s": 0.0, "kernel_s": 0.02, "nvme_gb_per_token": 0.0, "promoted": 0}
+---- text (code, ignore_eos) ----
+# Fibonacci Number Implementation
+
+Here's a Python function that returns the n-th Fibonacci number, along with comprehensive tests.
+
+```python
+def fibonacci(n):
+    """
+    Return the n-th Fibonacci number.
+    
+    Uses an iterative approach for efficiency (O(n) time, O(1) space).
+    
+    Args:
+        n: Non-negative integer index (0-indexed).
+           fibonacci(0) = 0
+           fibonacci(1) = 1
+           fibonacci(2) = 1
+           fibonacci(3) = 2
+           ...
+    
+    Returns:
+        The n-th Fibonacci number as an integer.
+    
+    Raises:
+        ValueError: If n is not a non-negative integer.
+    """
+    if not isinstance(n, int) or isinstance(n, bool):
+        raise ValueError("n must be an integer")
+    if n < 0:
+        raise ValueError("n must be a non-negative integer")
+    
+    # Handle base cases
+    if n ==
+---- end ----
+FREEGEN allres-q: 201 tok, 23.89 tok/s, distinct-token ratio 0.463 
+---- text (natural stop) ----
+# Fibonacci Number Implementation
+
+Here's a Python function that returns the n-th Fibonacci number, along with comprehensive tests.
+
+```python
+def fibonacci(n):
+    """
+    Return the n-th Fibonacci number.
+    
+    Uses an iterative approach for efficiency (O(n) time, O(1) space).
+    
+    Args:
+        n: Non-negative integer index (0-indexed).
+           fibonacci(0) = 0
+           fibonacci(1) = 1
+           fibonacci(2) = 1
+           fibonacci(3) = 2
+           ...
+    
+    Returns:
+        The n-th Fibonacci number as an integer.
+    
+    Raises:
+        ValueError: If n is not a non-negative integer.
+    """
+    if not isinstance(n, int) or isinstance(n, bool):
+        raise ValueError("n must be an integer")
+    if n < 0:
+        raise ValueError("n must be a non-negative integer")
+    
+    # Handle base cases
+    if n ==
+---- end ----

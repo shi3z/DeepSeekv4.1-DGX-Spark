@@ -1,0 +1,42 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.venv/
+logs/
+engram_rows/
+
+# The checkpoint is 510 GB and lives here by default. Never in git.
+models/
+
+# Local configuration: this is where the box-specific values go (MODEL_DIR,
+# PYTHON, HF_TOKEN, ...). env.example is the tracked, generic template.
+.env
+*.env
+!env.example
+
+# results/ is mostly tracked -- the measured rows ARE the deliverable -- with
+# two exceptions that are big and regenerable:
+#   * results/*/trace/*.npz  the raw per-layer routing trace (tools/expert_trace.py)
+#   * results/*/state/       the tracer's resume state
+# What the server itself needs is results/*/stats/coverage.json, and that stays
+# tracked. The negations below exist so that "ignore the generated stuff" can
+# never grow to eat the rows a reader came for.
+results/*/trace/
+results/*/state/
+!results/*/stats/
+!results/*/stats/coverage.json
+!results/oneshots/
+!results/oneshots/*.html
+!results/oneshots/*.txt
+
+# this fork
+.venv/
+models/
+results/*.log
+!results/spark-20260912/*.log
+measure/**/__pycache__/
+*.o
+peak_bw
+memkind
+nvme_bench
