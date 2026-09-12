@@ -285,13 +285,20 @@ class V41Engine:
             self._tier_fp4_frac = float(os.environ.get("DSV41_TIER_FP4_FRAC", "0.30"))
             self._tier_cold_fmt = os.environ.get("DSV41_TIER_COLD", "cb2")
             self._tier_inter_h = int(os.environ.get("DSV41_TIER_INTER_H", "1280"))
+            # The tail format. `cb2h` is 2 bits over `inter_h` channels; `fp4h` keeps the
+            # checkpoint's own e2m1 codes and UE8M0 scales over those channels and re-quantises
+            # nothing. Measured on real prompts, 2-bit tails lose to upstream's pruning outright
+            # (see docs/tiered-arena.md), so `fp4h` is the default.
+            self._tier_tail_fmt = os.environ.get("DSV41_TIER_TAIL", "fp4h")
             self._tier_fp4_share = float(os.environ.get("DSV41_TIER_FP4_SHARE", "0.40"))
             self._tier_sims = {self._tier_cold_fmt: CodebookSim(int(self._tier_cold_fmt[-1]), device)}
             tiered_moe_fn = TM.moe_forward_tiered
             self.kernel = f"triton-tiered({self._tier_mode})"
             if self._tier_mode == "allres":
+                tail = ("the checkpoint's own FP4 over" if self._tier_tail_fmt == "fp4h"
+                        else "2 bits over")
                 log(f"using the tiered MoE arena, all-resident: every routed expert stays in the "
-                    f"arena, the hottest at the checkpoint's FP4, the tail at 2 bits over "
+                    f"arena, the hottest at full-width FP4, the tail at {tail} "
                     f"{self._tier_inter_h} of 2304 intermediate channels "
                     f"(fp4 share {self._tier_fp4_share:.2f} of the headroom). Nothing streams.")
             else:
@@ -334,8 +341,9 @@ class V41Engine:
             import tiered_moe as TM
             ih = self._tier_inter_h
             if self._tier_mode == "allres":
-                n0, n1 = TM.fit_all_resident(arena_bytes, ih, self._tier_fp4_share)
-                plan = TM.plan_all_resident(n0, n1, ih, transient_slots=transient)
+                tf = self._tier_tail_fmt
+                n0, n1 = TM.fit_all_resident(arena_bytes, ih, self._tier_fp4_share, tail_fmt=tf)
+                plan = TM.plan_all_resident(n0, n1, ih, transient_slots=transient, tail_fmt=tf)
             else:
                 plan = TM.plan_tiers(arena_bytes, self._tier_fp4_frac, self._tier_cold_fmt,
                                      transient_slots=transient)

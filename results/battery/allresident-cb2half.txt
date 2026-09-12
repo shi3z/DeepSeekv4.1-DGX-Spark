@@ -1,0 +1,15 @@
+=== ALL-RESIDENT, CB2 half-width tail (INTER_H=768, share 0.4) ===
+### 日本で一番高い山と、その標高を教えてください。
+日本で一番高い山は **富士山**（Mount Fuji / 富士山）です。 |  | その標高（頂 summit）は **3,884 meters**（約 3,884 m）です。 |  | 更准确地说，富士山的顶峰标高常被表示为 **3,884 m**，有时也写作 **3,884 meters**。   | 另外，也有资料把富士山的标高写作 **3,884 m** 或 **3,884 meters**，而有时为了区分不同表述方式，会写成 **3
+     {'decode_tok_s': 20.27, 'accept_len_mean': 2.56}
+### フランスの首都はどこですか。一文で答えてください。
+パリ
+     {'decode_tok_s': 16.66, 'accept_len_mean': 2.0}
+### 徳川家康が江戸幕府を開いた年は？年号だけ答えてください。
+元和
+     {'decode_tok_s': 8.06, 'accept_len_mean': 1.0}
+### Write a Python function that reverses a string. Code only.
+```python | def reverse_string(s): |     return s[::-1] | ```
+     {'decode_tok_s': 37.94, 'accept_len_mean': 5.33}
+
+[exited with code 0]

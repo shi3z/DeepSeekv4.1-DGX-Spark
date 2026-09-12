@@ -24,6 +24,7 @@ import fp4_moe as F4
 import cb3_moe as C3
 import cb3 as CB3
 import cb2half as CBH
+import fp4half as FPH
 from fp4_moe import DIM, INTER, build_routing, _pick_bm
 
 
@@ -88,6 +89,7 @@ class TieredArena:
         "cb3": (C3.CB3ArenaV2, C3.CB3_BYTES_PER_SLOT),
         "cb2": (C3.CB2ArenaV2, C3.CB2_BYTES_PER_SLOT),
         "cb2h": (CBH.CB2HalfArena, None),
+        "fp4h": (FPH.FP4HalfArena, None),
     }
 
     def __init__(self, tiers, device="cuda", sims=None, inter_h: int = 1280):
@@ -98,7 +100,7 @@ class TieredArena:
             if n <= 0:
                 continue
             cls = self.FMT[fmt][0]
-            a = cls(n, self.device, inter_h=inter_h) if fmt == "cb2h" else cls(n, self.device)
+            a = cls(n, self.device, inter_h=inter_h) if fmt in ("cb2h", "fp4h") else cls(n, self.device)
             if fmt in ("cb2", "cb3", "cb2h") and sims:
                 a.sim = sims.get("cb2" if fmt == "cb2h" else fmt)
             self.tiers.append(TierSpec(fmt, base, n, a))
@@ -137,8 +139,14 @@ class TieredArena:
 N_ROUTED = 15360
 
 
+def tail_bytes(inter_h: int, tail_fmt: str = "cb2h") -> int:
+    import cb2half as _CBH
+    import fp4half as _FPH
+    return (_FPH.bytes_per_slot(inter_h) if tail_fmt == "fp4h" else _CBH.bytes_per_slot(inter_h))
+
+
 def plan_all_resident(n_fp4: int, n_cb2: int, inter_h: int = 1280, transient_slots: int = 8,
-                      n_total: int = N_ROUTED):
+                      n_total: int = N_ROUTED, tail_fmt: str = "cb2h"):
     """Every routed expert resident: the hottest `n_fp4` in the checkpoint's own FP4, the next
     `n_cb2` at full-width 2 bits, and the whole remaining tail at half-width 2 bits.
 
@@ -154,22 +162,22 @@ def plan_all_resident(n_fp4: int, n_cb2: int, inter_h: int = 1280, transient_slo
     # expert gets the last slot. Laying the tiers out hottest-last is what puts it in the FP4 one.
     # The transient ring is the tail of the space, so it merges into that same FP4 tier and a miss
     # (which cannot happen while every expert is resident) would land in the checkpoint's format.
-    tiers = [("cb2h", n_tail), ("cb2", n_cb2), ("fp4", n_fp4 + max(0, transient_slots))]
+    tiers = [(tail_fmt, n_tail), ("cb2", n_cb2), ("fp4", n_fp4 + max(0, transient_slots))]
     return [(f, n) for f, n in tiers if n > 0]
 
 
-def all_resident_bytes(n_fp4: int, n_cb2: int, inter_h: int = 1280, n_total: int = N_ROUTED) -> float:
-    import cb2half as _CBH
+def all_resident_bytes(n_fp4: int, n_cb2: int, inter_h: int = 1280, n_total: int = N_ROUTED,
+                       tail_fmt: str = "cb2h") -> float:
     return (n_fp4 * 18800640 + n_cb2 * C3.CB2_BYTES_PER_SLOT
-            + (n_total - n_fp4 - n_cb2) * _CBH.bytes_per_slot(inter_h))
+            + (n_total - n_fp4 - n_cb2) * tail_bytes(inter_h, tail_fmt))
 
 
 def fit_all_resident(budget_bytes: float, inter_h: int = 1280, fp4_share: float = 0.4,
-                     n_total: int = N_ROUTED):
+                     n_total: int = N_ROUTED, tail_fmt: str = "cb2h"):
     """Largest (n_fp4, n_cb2) that fits `budget_bytes`, splitting the headroom above the all-tail
     cost between the two upgrades by `fp4_share` of the SPARE bytes."""
     import cb2half as _CBH
-    tail = _CBH.bytes_per_slot(inter_h)
+    tail = tail_bytes(inter_h, tail_fmt)
     base = n_total * tail
     spare = budget_bytes - base
     if spare <= 0:
@@ -183,7 +191,7 @@ def fit_all_resident(budget_bytes: float, inter_h: int = 1280, fp4_share: float 
     d_cb2 = C3.CB2_BYTES_PER_SLOT - tail
     n_fp4 = int(spare * fp4_share // d_fp4)
     n_cb2 = int(spare * (1.0 - fp4_share) // d_cb2)
-    while all_resident_bytes(n_fp4, n_cb2, inter_h, n_total) > budget_bytes and (n_fp4 or n_cb2):
+    while all_resident_bytes(n_fp4, n_cb2, inter_h, n_total, tail_fmt) > budget_bytes and (n_fp4 or n_cb2):
         if n_cb2 > 0:
             n_cb2 -= 16
         else:
@@ -257,6 +265,22 @@ def _run_cb2(x, bs, bp, NB, weights_flat, arena, h, parts, BM, T, K, limit):
         NB512=CB3.block_plan(INTER)[0], NB256=CB3.block_plan(INTER)[1], num_warps=nw2, num_stages=ns2)
 
 
+def _run_fp4h(x, bs, bp, NB, weights_flat, arena, h, parts, BM, T, K, limit):
+    """The FP4 kernels at a narrower intermediate width. Nothing about the weights changes -- the
+    kept channels are the checkpoint's own e2m1 codes and UE8M0 scales -- so this is the same
+    already-tested path with `N`/`K` set to `inter_h`."""
+    IH = arena.inter_h
+    bn1, nw1, ns1 = F4._UP_CFG[BM]
+    bn2, nw2, ns2 = F4._DOWN_CFG[BM]
+    F4._moe_up_kernel[(NB, IH // bn1)](
+        x, arena.w1, arena.s1, arena.w3, arena.s3, h, weights_flat, bs, bp,
+        x.stride(0), h.stride(0), float(limit),
+        TOPK=K, N=IH, K=DIM, BM=BM, BN=bn1, num_warps=nw1, num_stages=ns1)
+    F4._moe_down_kernel[(NB, DIM // bn2)](
+        h, arena.w2, arena.s2, parts, bs, bp, h.stride(0), parts.stride(0),
+        TOPK=K, N=DIM, K=IH, BM=BM, BN=bn2, NTOK=T, num_warps=nw2, num_stages=ns2)
+
+
 def _run_cb2h(x, bs, bp, NB, weights_flat, arena, h, parts, BM, T, K, limit):
     """Same kernels as `_run_cb2`; only the intermediate width changes. `h` is allocated at the
     full 2304 and this tier writes and reads its first `inter_h` columns, so the row stride stays
@@ -275,7 +299,7 @@ def _run_cb2h(x, bs, bp, NB, weights_flat, arena, h, parts, BM, T, K, limit):
         NB512=CB3.block_plan(IH)[0], NB256=CB3.block_plan(IH)[1], num_warps=nw2, num_stages=ns2)
 
 
-_RUN = {"fp4": _run_fp4, "cb3": _run_cb3, "cb2": _run_cb2, "cb2h": _run_cb2h}
+_RUN = {"fp4": _run_fp4, "cb3": _run_cb3, "cb2": _run_cb2, "cb2h": _run_cb2h, "fp4h": _run_fp4h}
 
 
 def moe_forward_tiered(x: torch.Tensor, slots: torch.Tensor, weights: torch.Tensor,

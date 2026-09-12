@@ -1,0 +1,9 @@
+=== BASELINE: upstream keep 31 %, 10,560 of 15,360 experts dropped ===
+日本で一番高い山は**富士山**です。
+
+標高は**3,776メートル**です。
+
+富士山は静岡県と山梨県にまたがる活火山で、2013年には「富士山-信仰の対象と芸術の源泉」として世界文化遺産にも登録されています。
+--- {'decode_tok_s': 3.67, 'accept_len_mean': 2.73, 'prefill_s': 5.94, 'expert_hit_rate': 0.8163, 'nvme_gb': 85.5}
+
+[exited with code 0]

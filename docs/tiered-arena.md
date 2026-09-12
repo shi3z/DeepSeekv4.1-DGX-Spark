@@ -1,6 +1,13 @@
 # The tiered arena
 
-How all 15,360 routed experts are made to fit in ~97 GB, and what it costs.
+How all 15,360 routed experts are made to fit in ~97 GB, and why it is not worth doing.
+
+> **The result this document leads to is negative.** Both tail formats were measured against
+> upstream's pruning on the same prompts and both lost: see [the README](../README.md) and
+> [`results/battery/`](../results/battery). The design and the arithmetic are kept because they are
+> correct as far as they go and the machinery is reusable; the conclusion they support is that this
+> checkpoint's experts survive neither re-quantisation below FP4 nor channel truncation, and that
+> an absent expert is less harmful than a damaged one.
 
 ## The arithmetic that forces it
 
@@ -26,8 +33,15 @@ Upstream's own elimination (`results/htmlbug/`, `NOTES.md` 2026-09-12 00:10) tra
 collapsing into a repeated phrase to exactly this, and measured the cost as +0.19 nats on prose
 against +0.07 on code: prose leans on the tail of the router's distribution, code does not.
 
-A coarsely stored expert keeps the routing structure. That is the whole bet of this design, and it
-is the part that still needs the held-out numbers to confirm.
+A coarsely stored expert keeps the routing structure. That was the whole bet of this design, and
+**it lost.** Measured on four factual prompts, upstream's keep-31 % configuration answers all four
+correctly while both all-resident configurations get facts wrong and drift out of the prompt's
+language; the FP4 half-width tail reaches the repeated-phrase degeneration upstream documented.
+
+The post-hoc reading: pruning leaves a smaller MoE that is still internally consistent — the router
+selects the best of what remains and that expert then computes exactly — whereas coarsening every
+expert corrupts the computation on whatever path is taken. Code generation survived in every
+configuration, so a code-only evaluation would have missed this completely.
 
 ## The tail format: half-width CB2
 

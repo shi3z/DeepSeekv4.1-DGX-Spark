@@ -1,0 +1,18 @@
+03:49:25 [engine] tiered arena: 13594 fp4h @ 4.18 MB (56.8 GB) + 1774 fp4 @ 18.80 MB (33.4 GB) = 15368 slots (100.1 % of all routed experts resident)
+03:50:30 [engine] warm start done: 15360 experts resident (90.1 GB, 296.1 GB read) in 61s
+
+=== ALL-RESIDENT, FP4 half-width tail (no codebook anywhere) ===
+### 日本で一番高い山と、その標高を教えてください。
+日本で一番高い山は **Mount Fuji（富士山）**，其山顶标高（海拔）约为 **1,000,000** 米。更常采用的说法是“海拔约 **1,000,000** 米”，但严格来说，富士山的最高峰海拔并不是 **1,000,000** 米，而是接近 **1,000,000** 米（例如常说的“1,000,000”只是一个概值/近似表述）。   | 更准确地说，富士山的最高峰（
+     {'decode_tok_s': 17.06, 'accept_len_mean': 2.32}
+### フランスの首都はどこですか。一文で答えてください。
+フランスの首都は **巴黎**（位于北纬 40°45′ 东经 2°E 附近，即北纬 40°45′ 东经 2°E 附近、北纬 40°45′ 东经 2°E 附近、北纬 40°45′ 东经 2°E 附近、北纬 40°45′ 东经 2°E 附近、北纬 40°45′ 东经 2°E
+     {'decode_tok_s': 36.09, 'accept_len_mean': 3.86}
+### 徳川家康が江戸幕府を開いた年は？年号だけ答えてください。
+元号は「永暦」です。
+     {'decode_tok_s': 21.66, 'accept_len_mean': 2.75}
+### Write a Python function that reverses a string. Code only.
+```python | def reverse_string(s): |     return s[::-1] | ```
+     {'decode_tok_s': 40.69, 'accept_len_mean': 5.33}
+
+[exited with code 0]
