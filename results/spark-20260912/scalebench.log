@@ -1,0 +1,8 @@
+=== 8-bit scales (baseline) ===
+  run1   7.02 tok/s |  142.0 ms/tok | nvme 0.369 GB/tok | hit 0.9289 | sha c134a011cc42
+  run2   9.13 tok/s |  109.0 ms/tok | nvme 0.233 GB/tok | hit 0.9585 | sha 5fe9213a5ff7
+=== 4-bit scales from the side file ===
+[experts] 4-bit scales from /home/shi3z/dsv41-spark/models/scales4.bin (expert read 18.80 -> 18.25 MB, 0.9706x)
+  run1   6.87 tok/s |  145.1 ms/tok | nvme 0.358 GB/tok | hit 0.9289 | sha c134a011cc42
+  run2   8.94 tok/s |  111.3 ms/tok | nvme 0.226 GB/tok | hit 0.9585 | sha 5fe9213a5ff7
+SCALEBENCH DONE

@@ -1,0 +1,10 @@
+=== DSV41_BLOCK=1 (verify width 2) ===
+  run1   6.75 tok/s | accept  1.61 |  147.7 ms/tok | nvme 0.369 GB/tok | hit 0.9289
+  run2   9.16 tok/s | accept  1.65 |  108.7 ms/tok | nvme 0.233 GB/tok | hit 0.9585
+=== DSV41_BLOCK=3 (verify width 4) ===
+  run1   6.56 tok/s | accept  2.22 |  151.9 ms/tok | nvme 0.442 GB/tok | hit 0.9181
+  run2   7.36 tok/s | accept  2.05 |  135.4 ms/tok | nvme 0.327 GB/tok | hit 0.9428
+=== DSV41_BLOCK=5 (verify width 6) ===
+  run1   5.71 tok/s | accept  2.29 |  174.6 ms/tok | nvme 0.512 GB/tok | hit 0.9216
+  run2   6.63 tok/s | accept  2.29 |  150.4 ms/tok | nvme 0.386 GB/tok | hit 0.94
+SWEEP2 DONE

@@ -1,0 +1,42 @@
+06:48:38 [engine] using Triton FP4 MoE kernel
+06:49:46 [engine] weights: all non-expert weights on GPU in 69s
+06:49:47 [engine] CUDA free 95.4 GB of 130.6; host MemAvailable 106.7 GB; arena 94.0 GB = 4999 fp4 expert slots of 18.80 MB (33% of all routed experts, pinned)
+06:49:56 [engine] DSpark experts resident
+06:50:16 [engine] warm start done: 4935 experts resident (92.8 GB, 100.0 GB read) in 19s
+06:50:16 [engine] fast decode path enabled (CUDA graphs=False, device slot LUT=False)
+06:50:16 [engine] ready
+06:51:18 [engine] ja: 300 tokens in 62s, 27,600 routing records
+06:52:26 [engine] code: 300 tokens in 69s, 43,920 routing records
+
+token-conditioned routing prediction, top-6 from the token's own history
+  scored on 131,760 routing slots; chance = 1.56 %
+   layer   recall   recall | token seen before   coverage
+       0   14.99%                       71.16%      21.1%
+       4   13.13%                       62.32%      21.1%
+       8   13.37%                       63.48%      21.1%
+      12   10.35%                       49.13%      21.1%
+      16   10.01%                       47.54%      21.1%
+      20   15.34%                       69.97%      21.9%
+      24   15.49%                       70.66%      21.9%
+      28   13.89%                       63.36%      21.9%
+      32   13.32%                       60.74%      21.9%
+      36   14.22%                       64.88%      21.9%
+      39   14.37%                       65.56%      21.9%
+
+  all routing slots : recall@6 13.38 %   recall@12 15.62 %   (chance 1.56 %, lift 8.6x)
+  MISSES only       : recall@6 0.68 %   recall@12 0.90 %   over 14,283 missing slots
+
+  the misses are what a prefetch has to name; hits need nothing.
+  per-layer MISS recall@6:
+    layer  0:   1.7 %   (408 misses)
+    layer  4:   0.7 %   (431 misses)
+    layer  8:   0.4 %   (274 misses)
+    layer 12:   0.3 %   (364 misses)
+    layer 16:   0.4 %   (283 misses)
+    layer 20:   1.0 %   (313 misses)
+    layer 24:   0.7 %   (294 misses)
+    layer 28:   0.0 %   (308 misses)
+    layer 32:   0.9 %   (323 misses)
+    layer 36:   0.3 %   (363 misses)
+
+  at 0.233 GB/token of NVMe, naming 1 % of the misses would move 0.002 GB/token (0 ms/token) off the critical path -- IF it can be submitted early enough.

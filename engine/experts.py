@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import struct
+import struct
 import threading
 import time
 from collections import OrderedDict
@@ -43,7 +44,37 @@ S13_SHAPE = (2304, 160)
 W2_SHAPE = (5120, 1152)
 S2_SHAPE = (5120, 72)
 NAMES = ("w1.weight", "w1.scale", "w2.weight", "w2.scale", "w3.weight", "w3.scale")
+SCALE_IDX = (1, 3, 5)                      # NAMES entries that are UE8M0 scales
+SCALE4_BIAS = 115                          # 4-bit value v <-> E8M0 byte v + BIAS (tools/pack_scales.py)
+SCALE4_PACKED = 552_960                    # one expert's three scale tensors at 4 bits, 4096-aligned
 EXPERT_BYTES = 3 * (2304 * 2560 + 2304 * 160)
+
+
+class ScaleFile:
+    """The routed experts' UE8M0 scales at 4 bits, in one O_DIRECT side file.
+
+    All 17.4 GB of expert scales use 14 distinct byte values occupying the contiguous range
+    115..128, so a scale is 4 bits with no lookup table: byte = nibble + 115. Reading them from
+    here instead of out of the shard takes an expert's read from 18.80 MB to 18.25 MB (0.971x)
+    without touching the weights or the checkpoint. Built by `tools/pack_scales.py`, which verifies
+    the round trip against the checkpoint byte for byte.
+    """
+
+    def __init__(self, path: str, n_experts: int = 384):
+        import json as _json
+        self.path = path
+        self.n_experts = n_experts
+        with open(path, "rb") as f:
+            magic = f.read(8)
+            assert magic == b"DSV41S4B", f"{path}: not a packed-scale file ({magic!r})"
+            n = struct.unpack("<I", f.read(4))[0]
+            self.hdr = _json.loads(f.read(n))
+        assert self.hdr["packed_bytes"] == SCALE4_PACKED and self.hdr["bias"] == SCALE4_BIAS, self.hdr
+        self.fd = os.open(path, os.O_RDONLY | os.O_DIRECT)
+        self.base = 4096
+
+    def offset(self, layer: int, expert: int) -> int:
+        return self.base + (layer * self.n_experts + expert) * SCALE4_PACKED
 
 
 class ShardFile:
@@ -144,6 +175,16 @@ class ExpertStore:
         # the whole read + H2D); `read_pool` runs the individual aligned pieces of that expert's two
         # file runs. A single pool would deadlock as soon as every worker sat waiting for a piece
         # that has no worker left to run it.
+        sc = os.environ.get("DSV41_SCALE4", "").strip()
+        self.scale4 = ScaleFile(sc) if sc else None
+        if self.scale4 is not None:
+            log_once = getattr(self, "_logged_scale4", False)
+            if not log_once:
+                print(f"[experts] 4-bit scales from {sc} "
+                      f"(expert read {EXPERT_BYTES / 1e6:.2f} -> "
+                      f"{(EXPERT_BYTES - SCALE4_PACKED) / 1e6:.2f} MB, "
+                      f"{(EXPERT_BYTES - SCALE4_PACKED) / EXPERT_BYTES:.4f}x)")
+                self._logged_scale4 = True
         self.pool = ThreadPoolExecutor(io_threads, thread_name_prefix="expert-io")
         self.read_pool = ThreadPoolExecutor(max(1, read_threads), thread_name_prefix="expert-read")
         self.lock = threading.Lock()
@@ -199,6 +240,18 @@ class ExpertStore:
             jobs = []
             nbytes = 0
             t0 = time.perf_counter()
+            scale_views = None
+            if self.scale4 is not None:
+                # the scales come from the side file at 4 bits; skip their run in the shard
+                runs = [r for r in runs if not all(i in SCALE_IDX for (i, _, _) in r[2])]
+                assert all(all(i not in SCALE_IDX for (i, _, _) in r[2]) for r in runs), \
+                    "a shard run mixes weights and scales; the side file cannot replace it"
+                cur = (cur + ALIGN - 1) // ALIGN * ALIGN
+                packed = mv[cur: cur + SCALE4_PACKED]
+                jobs.append((self.scale4.fd, packed, self.scale4.offset(layer, expert), SCALE4_PACKED))
+                scale_views = buf[cur: cur + SCALE4_PACKED]
+                cur += SCALE4_PACKED
+                nbytes += SCALE4_PACKED
             for (a, b, members) in runs:
                 alo = a - a % ALIGN
                 ahi = (b + ALIGN - 1) // ALIGN * ALIGN
@@ -220,6 +273,8 @@ class ExpertStore:
             _pread_chunk(*jobs[0])
             for f in futs:
                 f.result()
+            if scale_views is not None:
+                out = [t for i, t in enumerate(out) if i not in SCALE_IDX] + [scale_views]
             assert all(t is not None for t in out)
             self.stats["bytes_read"] += nbytes
             self.stats["read_s"] += time.perf_counter() - t0
@@ -229,8 +284,26 @@ class ExpertStore:
             self._release(sid)
 
     def read_expert(self, layer: int, expert: int, prefix: str | None = None):
-        """The 6 tensors (CPU uint8) of one expert, copied out of the staging buffer."""
-        return self._read_leased(layer, expert, prefix, lambda v: [t.clone() for t in v])
+        """The 6 tensors (CPU uint8) of one expert, copied out of the staging buffer.
+
+        With the 4-bit side file the read returns (w1, w2, w3, packed); this restores the
+        six-tensor contract on the host. It is only used to load the 384 DSpark experts once at
+        startup, so the numpy unpack here costs nothing -- the decode path unpacks on the GPU.
+        """
+        def sink(v):
+            if self.scale4 is None:
+                return [t.clone() for t in v]
+            w1, w2, w3, packed = v
+            p = packed.numpy()
+            u = np.empty(p.size * 2, dtype=np.uint8)
+            u[0::2] = (p & 0x0F) + SCALE4_BIAS
+            u[1::2] = (p >> 4) + SCALE4_BIAS
+            n13 = S13_SHAPE[0] * S13_SHAPE[1]
+            n2 = S2_SHAPE[0] * S2_SHAPE[1]
+            t = torch.from_numpy(u)
+            return [w1.clone(), t[:n13].clone(), w2.clone(), t[n13:n13 + n2].clone(),
+                    w3.clone(), t[n13 + n2:].clone()]
+        return self._read_leased(layer, expert, prefix, sink)
 
     def _copy_stream(self):
         """One CUDA stream per io thread.
@@ -258,7 +331,20 @@ class ExpertStore:
 
         def sink(v):
             t0 = time.perf_counter()
-            w1, s1, w2, s2, w3, s3 = v
+            if self.scale4 is not None:
+                # v is (w1, w2, w3, packed_scales); unpack on the GPU -- 552,960 packed bytes are
+                # four elementwise kernels there and ~1 ms of numpy here, and a miss cannot afford
+                # the second.
+                w1, w2, w3, packed = v
+                pd = packed.to(self.arena.device, non_blocking=True)
+                u = torch.empty(pd.numel() * 2, dtype=torch.uint8, device=pd.device)
+                u[0::2] = (pd & 0x0F) + SCALE4_BIAS
+                u[1::2] = (pd >> 4) + SCALE4_BIAS
+                n13 = S13_SHAPE[0] * S13_SHAPE[1]
+                n2 = S2_SHAPE[0] * S2_SHAPE[1]
+                s1, s2, s3 = u[:n13], u[n13:n13 + n2], u[n13 + n2:]
+            else:
+                w1, s1, w2, s2, w3, s3 = v
             # per-expert codebook width for a codebook arena (engine/codebook_sim.py): a key with an
             # entry in `cb_bits` is packed with that width's CodebookSim instead of the arena's own.
             kw = {}
@@ -369,11 +455,14 @@ class ExpertStore:
         """experts: int tensor [T, K] of expert ids for `layer`. Returns the slot ids [T, K],
         loading misses (in parallel) first."""
         t_res = time.perf_counter()
+        _t_a = time.perf_counter()
         # One device->host copy, and the set/LUT work in numpy on the host. The old path ran
         # torch.unique on the GPU, synchronised on .tolist(), built a 384-entry LUT, copied that
         # back up and gathered it there: two extra launches and a second sync per layer, 40 layers
         # per token, for 36 numbers.
         ex = experts.to("cpu", dtype=torch.int32, non_blocking=False).numpy()
+        self.stats["d2h_sync_s"] = self.stats.get("d2h_sync_s", 0.0) + (time.perf_counter() - _t_a)
+        _t_b = time.perf_counter()
         uniq = np.unique(ex)
         slot_of = {}
         to_load = []
@@ -414,6 +503,7 @@ class ExpertStore:
         for e, s in slot_of.items():
             lut[e] = s
         slots = torch.from_numpy(lut[ex.astype(np.intp)]).to(experts.device)
+        self.stats["host_set_s"] = self.stats.get("host_set_s", 0.0) + (time.perf_counter() - _t_b)
         self.stats["route_s"] += time.perf_counter() - t_res
         if to_load:
             t0 = time.perf_counter()

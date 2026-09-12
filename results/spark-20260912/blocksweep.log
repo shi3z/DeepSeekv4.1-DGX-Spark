@@ -1,0 +1,17 @@
+=== DSV41_BLOCK=3 (verify width 4) ===
+  ja      6.50 tok/s | accept  2.22 |  153.3 ms/tok | nvme 0.442 GB/tok | hit 0.9181
+  code    5.40 tok/s | accept  3.30 |  184.5 ms/tok | nvme 0.718 GB/tok | hit 0.8388
+=== DSV41_BLOCK=5 (verify width 6) ===
+  ja      5.72 tok/s | accept  2.29 |  174.4 ms/tok | nvme 0.512 GB/tok | hit 0.9216
+  code    5.46 tok/s | accept  4.33 |  182.7 ms/tok | nvme 0.744 GB/tok | hit 0.8362
+=== DSV41_BLOCK=7 (verify width 8) ===
+  ja      5.34 tok/s | accept  2.52 |  186.8 ms/tok | nvme 0.560 GB/tok | hit 0.9182
+  code    4.39 tok/s | accept  4.33 |  226.9 ms/tok | nvme 0.921 GB/tok | hit 0.8283
+=== DSV41_BLOCK=9 (verify width 10) ===
+Traceback (most recent call last):
+  File "<string>", line 4, in <module>
+KeyError: 'completion_tokens'
+Traceback (most recent call last):
+  File "<string>", line 4, in <module>
+KeyError: 'completion_tokens'
+SWEEP DONE

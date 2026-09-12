@@ -1,0 +1,6 @@
+=== DSV41_READ_CHUNK_MB=4 ===
+    5.37 tok/s |  185.6 ms/tok | load_wait  131.1 ms/tok | achieved  4.09 GB/s | route  55.8 | hit 0.9195
+=== DSV41_READ_CHUNK_MB=8 ===
+    5.43 tok/s |  183.6 ms/tok | load_wait  129.1 ms/tok | achieved  4.16 GB/s | route  56.7 | hit 0.9195
+=== DSV41_READ_CHUNK_MB=24 ===
+    5.24 tok/s |  190.2 ms/tok | load_wait  135.3 ms/tok | achieved  3.97 GB/s | route  56.7 | hit 0.9195

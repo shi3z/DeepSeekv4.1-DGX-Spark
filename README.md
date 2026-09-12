@@ -1,87 +1,86 @@
-# DeepSeek-V4.1-Flash on one DGX Spark — a measured negative result
+# DeepSeek-V4.1-Flash on one DGX Spark — one speedup, and eight measured dead ends
 
-> **Read this first.** This fork set out to break the dichotomy the upstream repository arrived at
-> — stream every expert (full quality, 3.33 tok/s) or drop most of them (fast, and generation
-> degrades) — by keeping **all 15,360 routed experts resident at reduced precision**. The machinery
-> works, it is 22 % faster than upstream's pruned default, and it touches NVMe zero times during
-> decode. **And the model it produces is worse than the one that throws 69 % of the experts away.**
-> The hypothesis was tested on real prompts and it failed. What follows is the design, the
-> measurements that refute it, and the box characterisation that is worth keeping either way.
+> **What is here.** A fork of
+> [0xBakeer/deepseek-v41-flash-spark](https://github.com/0xBakeer/deepseek-v41-flash-spark) (MIT)
+> that spent a day trying to make this model faster on one GB10 box. **One thing worked** — the
+> speculative block length, +38 %, lossless, a configuration change — and **eight did not**, each
+> closed by a measurement rather than an argument. The negative results are the larger part of the
+> value: they are the things anyone attacking this box would try first.
 
-This is a fork of **[0xBakeer/deepseek-v41-flash-spark](https://github.com/0xBakeer/deepseek-v41-flash-spark)**
-(MIT, see [LICENSE](LICENSE) and [CREDITS.md](CREDITS.md)). That repository is the engine: the
-pure-PyTorch port of DeepSeek-V4.1-Flash, the Triton FP4 grouped-MoE kernel, the expert arena, the
-CUDA-graph decode path, the OpenAI-compatible server, and the 40-layer routing trace. Its own
-README is kept here as [README-upstream.md](README-upstream.md).
+Upstream is the engine: the pure-PyTorch port of DeepSeek-V4.1-Flash, the Triton FP4 grouped-MoE
+kernel, the expert arena, the CUDA-graph decode path, the OpenAI-compatible server and the 40-layer
+routing trace. Its README is kept as [README-upstream.md](README-upstream.md); its
+[LICENSE](LICENSE), [CREDITS.md](CREDITS.md), [NOTES.md](NOTES.md) and [RESULTS.md](RESULTS.md) are
+intact.
 
-## What was tried
+## The one that worked
 
-The routed experts are 15,360 × 3 × 2304 × 5120 weights, which at the checkpoint's own FP4 with
-UE8M0 scales is **288.8 GB**. A DGX Spark has ~121 GiB visible, and after the dense weights, the LM
-head, the DSpark drafter's own experts and the caches, about **97 GB is left for them** — 1.43 bits
-per weight for the set.
+`DSV41_BLOCK` is the number of drafted positions per speculative step. Upstream ships **5**, tuned
+on an all-resident arena. On the streaming path — every expert reachable, nothing re-quantised,
+misses read off NVMe — **1** is right:
 
-Upstream measured both ends of the resulting dichotomy and, on 2026-09-12, concluded there was
-nothing in between (`NOTES.md`, 00:10):
+| `DSV41_BLOCK` | cold | **warm** | acceptance | hit rate | NVMe GB/token |
+|---|---|---|---|---|---|
+| **1** | 7.02 | **9.13** | 1.65 | **0.9585** | **0.233** |
+| 3 | 6.56 | 7.36 | 2.05 | 0.9428 | 0.327 |
+| 5 (upstream) | 5.71 | 6.63 | 2.29 | 0.9400 | 0.386 |
 
-> At 288.8 GB of FP4 experts and 121 GiB of memory there is no arrangement that keeps every expert
-> resident. Either the experts stream on a miss (full quality, NVMe-bound) or some are dropped
-> (fast, and a workload the keep-set does not cover degenerates). The recipe now ships the first.
+**+38 %, and the output does not change** — the target still verifies every drafted token.
 
-The argument for a third option went: dropping an expert is not a small error, because the router
-picks 6 of 384 by score and if those 6 are not resident the top 6 *of a smaller set* runs instead —
-a different FFN, not a noisier one. Storing an expert coarsely should be gentler, because the right
-expert still runs. So spend the 97 GB unevenly instead of spending it on a subset: the hottest
-experts at the checkpoint's own FP4, the tail compressed.
+```bash
+DSV41_BLOCK=1 ./start.sh        # Japanese prose and other low-acceptance text
+DSV41_BLOCK=5 ./start.sh        # code: acceptance climbs to 4.33 there and pays for the bytes
+```
 
-Two tail formats were built and measured (`tools/cb2half.py`, `tools/fp4half.py`): 2 bits per
-weight over a third of the intermediate channels, and the checkpoint's **unmodified** FP4 codes
-over 22 % of them. Both keep every expert reachable.
+Why: a verify position adds unique experts to the step, and on this path those bytes come off NVMe
+at 4.1 GB/s instead of out of GPU memory at 234 GB/s — **57x more expensive per byte**, which moves
+the optimum to a shorter block. A shorter block also churns the LRU less, so the hit rate *rises*
+and the bytes fall again.
 
-## What happened
+> Generally: **on an offloaded inference path the optimal speculative block length is set by the
+> memory hierarchy, not by the model.** Speculation parameters tuned against resident GPU weights
+> do not port to NVMe streaming, and here the error was 38 %.
 
-Four prompts, greedy, `temperature=0`, one run each, same box and same engine — only the expert
-arena differs. Full transcripts in [`results/battery/`](results/battery).
+## The eight that did not
 
-| | experts the router reaches | tail | Mt. Fuji's height | capital of France | year Tokugawa founded the shogunate | reverse a string |
-|---|---|---|---|---|---|---|
-| **upstream, keep 31 % FP4** | 4,800 — **10,560 dropped** | — | **3,776 m** ✓ | ✓ | **1603** ✓ | ✓ |
-| this fork, CB2 half-width | **all 15,360** | 2-bit, 768/2304 ch | 3,884 m ✗ | ✓ | 「元和」✗ | ✓ |
-| this fork, FP4 half-width | **all 15,360** | exact FP4, 512/2304 ch | **1,000,000 m** ✗ | 巴黎 + a coordinate loop ✗ | 「永暦」✗ | ✓ |
+Full numbers, methods and the tools in [docs/streaming-decode.md](docs/streaming-decode.md).
 
-The configuration that throws away two thirds of the experts answers all four correctly and in one
-language. Both all-resident configurations get facts wrong and drift out of Japanese into Chinese;
-the FP4 half-width one degenerates into the repeated-phrase failure upstream documented. Code
-generation survives everywhere, which is why a code-only benchmark would have missed this entirely.
+| | measured |
+|---|---|
+| all experts resident at 2 bits | **2 of 4** factual prompts wrong — upstream's keep-31 %, which *drops* 10,560 experts, gets **4 of 4** |
+| all experts resident, FP4 over fewer channels | **1 of 4**; truncating channels hurts more than rounding weights |
+| a workload-specific expert pack | 5.59 vs **6.02** tok/s for the English-ranked warm start; the LRU re-converges within one prefill |
+| lossless compression of the experts | FP4 payload **0.973x** and already at its order-0 entropy limit; lz4 1.000x |
+| I/O chunk size (4 / 8 / 24 MB) | 4.09 / 4.16 / **3.97** GB/s — the split was never the problem |
+| a better eviction policy | **0 %** of misses were used in the previous 32 steps; the LRU has no headroom left |
+| history-based prefetch | **91.2 %** of misses were never seen in a 64-step window |
+| token-conditioned prefetch | 13.4 % recall on all routing slots (8.6x chance) but **0.68 % on misses** — *below* chance |
 
-**So: for this checkpoint, an absent expert is less harmful than a damaged one.** After the fact
-the reason is easy to state — pruning leaves a smaller MoE that is still internally consistent, and
-the router simply selects the best of what remains, while coarsening every expert corrupts the
-computation on whatever path is taken. Before the fact I had it backwards, and I read upstream's
-own evidence to suit: they recorded their 3-bit CB3 format degenerating in free generation and
-later found pruning to be *a* cause of degeneration; I treated the second finding as acquitting the
-first. It did not.
+The last one closes the whole prefetch direction, and the reason is structural rather than
+incidental: a predictor of "what this context usually routes to" names the frequently-routed
+experts, which are exactly the ones already resident. A miss is by construction an unusual routing
+choice, so any accurate predictor is anti-correlated with the thing that needs predicting. Naming
+the unusual choices would mean reproducing the target router, which needs the target's hidden
+state, which means running the backbone — the verify step itself.
 
-**Upstream's dichotomy stands.** Nothing here should be run in preference to it.
+## The quality result this fork also produced
 
-## The speed result, which is real and does not matter
+The first thing tried here was the opposite of pruning: keep **all 15,360 routed experts** resident
+by storing them coarsely, on the argument that the router's top-6 is then still the real top-6.
+Two tail formats were built ([`tools/cb2half.py`](tools/cb2half.py),
+[`tools/fp4half.py`](tools/fp4half.py)) and both lost to upstream's pruning on real prompts.
 
-Same box, same prompt, 200 greedy tokens, thinking off, `MAX_SEQ=8192`, one run each:
+| | experts the router reaches | Mt. Fuji's height | capital of France | year the Tokugawa shogunate was founded | reverse a string |
+|---|---|---|---|---|---|
+| upstream, keep 31 % FP4 | 4,800 — **10,560 dropped** | **3,776 m** ✓ | ✓ | **1603** ✓ | ✓ |
+| this fork, 2-bit tail | **all 15,360** | 3,884 m ✗ | ✓ | 「元和」✗ | ✓ |
+| this fork, FP4 tail, 512/2304 channels | **all 15,360** | **1,000,000 m** ✗ | a coordinate loop ✗ | 「永暦」✗ | ✓ |
 
-| | upstream default (keep 31 % FP4) | this fork (all resident, CB2 half-width) |
-|---|---|---|
-| experts the router can reach | 4,800 of 15,360 | **15,360 of 15,360** |
-| arena | 90.2 GB, one format | 94.0 GB: 2,206 FP4 + 1,282 CB2 + 11,872 CB2-half(768) |
-| **decode** | 24.73 tok/s | **30.14 tok/s** |
-| DSpark acceptance | 4.30 | 4.44 |
-| NVMe read during decode | 0 GB | 0 GB |
-| prefill, 19-token prompt | 15.21 tok/s | 8.39 tok/s |
-| load, process start to ready | 108 s | 314 s |
-
-+21.9 % on decode with every expert resident, and it is worth nothing, because the model is worse.
-It is recorded because the arithmetic and the kernels behind it are sound and reusable: if a
-format is ever found that this checkpoint's experts *do* survive, the arena that holds a mixture of
-formats, plans a budget across them, and captures into a CUDA graph is here and tested.
+**For this checkpoint an absent expert is less harmful than a damaged one.** Pruning leaves a
+smaller MoE that is still internally consistent; coarsening every expert corrupts the computation
+on whatever path is taken. Code generation survived every configuration, which is why a code-only
+benchmark would have missed this completely. Full reasoning in
+[docs/tiered-arena.md](docs/tiered-arena.md), transcripts in [`results/battery/`](results/battery).
 
 ### The box, measured
 
@@ -111,9 +110,9 @@ Per expert at decode shapes (6 tokens × 6 experts, ~16 unique experts per layer
 Fewer bits buys less than the byte count suggests: the kernels fall from 180 GB/s to 110 GB/s as
 the format narrows, so CB2 is 0.68x FP4 in wall time, not the 0.53x its bytes imply.
 
-### Four optimizations that measured as worthless
+### Four kernel-level optimizations that also measured as worthless
 
-Recorded so nobody spends a day on them again. Each was tried on this box:
+Separate from the eight above; these are about the MoE kernels rather than the streaming path.
 
 1. **Fusing the "5,300 small kernels per step."** They are 2.1 ms in total. Upstream's own profile
    already said this is inter-kernel latency inside a CUDA graph, not launch overhead.
@@ -123,12 +122,29 @@ Recorded so nobody spends a day on them again. Each was tried on this box:
 4. **Retuning the CB2 kernel's `(BN, warps, stages)`.** A full two-stage sweep found nothing better
    than the shipped `(32, 4, 3)`.
 
+### The scales are 4 bits, and it still does not pay
+
+An exhaustive scan of all 17.4 GB of expert UE8M0 scales finds **14 distinct values**, in the
+contiguous range 115..128, so a scale is a nibble and decoding is `nibble + 115` with no lookup
+table (`tools/pack_scales.py`; a *sampled* scan sees 8 and would have silently corrupted whichever
+experts use the rest). It takes an expert from 18.80 to 18.25 MB, and the measured NVMe traffic
+fell by exactly the predicted 3.0 % with a **bit-identical output** (matching SHA-256).
+
+It was still **2.1 % slower**, because the GPU unpack sits on the critical path and costs more than
+the bytes save. The saving only exists if the nibble is decoded *inside* the dequant kernel, which
+is where the remaining +3-5 % of this idea lives.
+
 ## Running it
 
-**Prefer upstream's configuration.** These flags exist to reproduce the negative result above and
-to give the machinery a home, not because the result is good.
+Install as [README-upstream.md](README-upstream.md) describes. For the streaming (full-quality)
+path, the one change worth making is the block length:
 
-Install as [README-upstream.md](README-upstream.md) describes, then:
+```bash
+DSV41_BLOCK=1 ARENA_GB=94 TRANSIENT_SLOTS=64 ./start.sh     # +38 % on Japanese prose
+```
+
+The tiered-arena flags below exist to reproduce the negative result above and to give the machinery
+a home, not because the result is good.
 
 ```bash
 # every routed expert resident: hot at FP4, warm at CB2, tail at half-width CB2

@@ -623,6 +623,9 @@ class V41Engine:
                 # where the MoE time actually goes: routing+slot bookkeeping, waiting for the
                 # NVMe loads of this layer, and the Triton kernel itself (moe_s minus the rest).
                 "route_s": round(st["route_s"], 2), "load_wait_s": round(st["load_s"], 2),
+                "d2h_sync_s": round(st.get("d2h_sync_s", 0.0), 2),
+                "gpu_drain_s": round(st.get("gpu_drain_s", 0.0), 2),
+                "host_set_s": round(st.get("host_set_s", 0.0), 2),
                 "lease_s": round(st["lease_s"], 2), "h2d_s": round(st["h2d_s"], 2),
                 "kernel_s": round(m.stats["moe_s"] - st["resolve_s"], 2),
                 "nvme_gb_per_token": round(st["bytes_read"] / 1e9 / max(n_out, 1), 3),
