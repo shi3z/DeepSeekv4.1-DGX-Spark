@@ -54,19 +54,74 @@ def post_stream(url: str, payload: dict, timeout: float = 3600.0):
                 continue
 
 
-def wait_for_health(url: str, patience: float) -> dict | None:
-    """The warm start fills the expert arena before the socket answers; 20 minutes is normal."""
+_PHASES = [
+    ("weights: all non-expert weights on GPU", "non-expert weights on GPU"),
+    ("DSpark experts resident", "DSpark drafter resident"),
+    ("warm start done", "arena filled"),
+    ("fast decode path enabled", "CUDA graphs built"),
+]
+
+
+def _progress_from_log(path: str) -> str | None:
+    """What the engine is doing, read out of its own log.
+
+    The server binds the port only after the expert arena is full, which for the all-resident plan
+    is about four minutes of NVMe reads and GPU re-packing. A spinner cannot tell that apart from a
+    server that is never coming up, and the engine is already printing exactly the right numbers.
+    """
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 65536))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    last = None
+    for line in reversed(lines):
+        if "Traceback" in line or "Error:" in line:
+            return f"{YELLOW}the engine logged an error -- see {path}{RESET}"
+        if "warm start " in line and "/" in line and "done" not in line:
+            try:
+                frag = line.split("warm start ", 1)[1]
+                done, rest = frag.split("/", 1)
+                total = rest.split(" ", 1)[0]
+                gb = rest.split(",")[1].strip() if "," in rest else ""
+                pct = 100.0 * int(done) / max(1, int(total))
+                bar = "█" * int(pct / 4) + "░" * (25 - int(pct / 4))
+                return f"filling the expert arena {bar} {pct:5.1f}%  {done}/{total} experts, {gb}"
+            except (ValueError, IndexError):
+                return None
+        if "weights: layer" in line and last is None:
+            try:
+                n = int(line.split("weights: layer ", 1)[1].split(" ", 1)[0])
+                last = f"loading the non-expert weights: layer {n}/39"
+            except (ValueError, IndexError):
+                pass
+        for needle, human in _PHASES:
+            if needle in line:
+                return human
+    return last
+
+
+def wait_for_health(url: str, patience: float, log_path: str | None) -> dict | None:
+    """The warm start fills the expert arena before the socket answers; several minutes is normal."""
     t0 = time.time()
     spin = "|/-\\"
     i = 0
+    width = 0
     while time.time() - t0 < patience:
         try:
             with urllib.request.urlopen(url.rstrip("/") + "/health", timeout=5) as r:
+                print("\r" + " " * width + "\r", end="")
                 return json.loads(r.read().decode())
         except Exception:  # noqa: BLE001
             el = int(time.time() - t0)
-            print(f"\r{DIM}waiting for the engine {spin[i % 4]} {el // 60}m{el % 60:02d}s "
-                  f"(the expert arena fills before the port opens){RESET}   ", end="", flush=True)
+            what = _progress_from_log(log_path) if log_path else None
+            if what is None:
+                what = "waiting for the engine (the expert arena fills before the port opens)"
+            msg = f"{DIM}{spin[i % 4]} {el // 60}m{el % 60:02d}s  {what}{RESET}"
+            width = max(width, len(msg))
+            print("\r" + msg.ljust(width), end="", flush=True)
             i += 1
             time.sleep(2)
     return None
@@ -101,10 +156,12 @@ def main() -> int:
     ap.add_argument("--temp", type=float, default=0.6)
     ap.add_argument("--max-tokens", type=int, default=2048)
     ap.add_argument("--wait", type=float, default=1800.0, help="seconds to wait for /health")
+    ap.add_argument("--log", default="logs/server.log",
+                    help="the server's log, read to show real load progress while waiting; "
+                         "pass '' to disable")
     a = ap.parse_args()
 
-    health = wait_for_health(a.url, a.wait)
-    print("\r" + " " * 78 + "\r", end="")
+    health = wait_for_health(a.url, a.wait, a.log or None)
     if health is None:
         print(f"{YELLOW}the server at {a.url} never answered /health.{RESET}")
         print("Check the log:  tail -f logs/server.log")

@@ -151,7 +151,7 @@ ARENA_GB=94 TRANSIENT_SLOTS=8 ./start.sh
 | `EXPERT_FORMAT=tiered` | use the multi-format arena |
 | `DSV41_TIER_MODE` | `allres` (every expert resident) or `stream` (two resident tiers, the rest off NVMe) |
 | `DSV41_TIER_INTER_H` | intermediate channels kept by the tail tier: 768, 1024, 1280 or 1536 (must be a multiple of 256) |
-| `DSV41_TIER_FP4_SHARE` | how much of the headroom above the all-tail cost is spent on FP4 rather than CB2. 0.0 is the fast end, 1.0 the precise end |
+| `DSV41_TIER_FP4_SHARE` | how much of the headroom above the all-tail cost is spent on FP4 rather than CB2. **Lower is usually better** — see below |
 | `ARENA_GB` | pin the arena. `allres` refuses to start rather than silently dropping experts if the budget cannot hold the tail tier |
 
 The tier plan is printed at startup, and so is the line that matters:
@@ -162,9 +162,21 @@ tiered arena: 11872 cb2h @ 3.34 MB (39.7 GB) + 1282 cb2 @ 9.99 MB (12.8 GB)
 every routed expert is resident (15360 slots): the decode path never touches NVMe and the slot LUT is permanent
 ```
 
-`DSV41_TIER_FP4_SHARE` is the speed/precision dial. Spending the budget on FP4 makes the model
-more faithful and slower (an FP4 expert is 105 µs against the tail's 31); spending none of it is
-the fast end. Every setting keeps all 15,360 experts reachable.
+**`DSV41_TIER_FP4_SHARE` is not the dial it looks like.** The obvious reading — more FP4 is more
+faithful — is wrong, because what the number really controls is how many experts are left in the
+*coarsest* tier. Promoting an expert from the tail to FP4 costs 14.35 MB; promoting it to CB2 costs
+5.54 MB. The same bytes therefore rescue **2.6x more experts** from the tail if they are spent on
+CB2, and the tail is where the damage is:
+
+| `fp4_share` at `ARENA_GB=88`, `INTER_H=768` | routed pairs served by FP4 | by CB2 | **by the tail** | expert kernel |
+|---|---|---|---|---|
+| 0.8 | 55.7 % | 11.3 % | **33.0 %** | 18.42 ms/token |
+| **0.4** | 41.8 % | 34.7 % | **23.6 %** | **18.19 ms/token** |
+| 0.0 | 0 % | ~85 % | **~15 %** | ~19 ms/token |
+
+`0.4` has 9.4 points less of the routing going through the coarsest tier than `0.8` **and is
+marginally faster**. Every setting keeps all 15,360 experts reachable; what changes is how coarse
+the least-served ones are.
 
 ### Talking to it
 
