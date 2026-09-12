@@ -88,12 +88,24 @@ remote pack, and neither box has 222 GB free to stage a full one.
 engine behaves exactly as before.
 
 ```
-python a100-vq/pack_store.py --budget-gb 88          # once, ~8 min
 patch -p1 < a100-vq/experts.py.a100-vq.patch
+M=$HOME/dsv41-spark/models
+P=a100-vq/punch_fp4.py
 
-DSV41_CB3_STORE=$HOME/dsv41-spark/models/cb3_store \
+# pack in batches, punching each one free before the next needs the room (~30 min total)
+python a100-vq/pack_store.py --skip 6500 --budget-gb 88 --out $M/cb3_store
+python $P --store $M/cb3_store
+python a100-vq/pack_store.py --skip 0 --rank-hi 6500 --budget-gb 100 --out $M/cb3_store2
+python $P --store $M/cb3_store:$M/cb3_store2
+python a100-vq/pack_store.py --skip 12587 --budget-gb 45 --out $M/cb3_store3
+python $P --store $M/cb3_store:$M/cb3_store2:$M/cb3_store3
+
+DSV41_CB3_STORE=$M/cb3_store:$M/cb3_store2:$M/cb3_store3 \
 DSV41_BLOCK=1 EXPERT_FORMAT=cb3 ARENA_GB=94 TRANSIENT_SLOTS=64 KEEP_FREE_GB=12 ./start.sh
 ```
+
+`punch_fp4.py --dry-run` first if you want to see what it would free. The order matters: an expert's
+FP4 bytes are only punched once it is in a store.
 
 ## Quality
 
