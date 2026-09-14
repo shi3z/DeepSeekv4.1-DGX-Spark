@@ -361,8 +361,16 @@ def build_routing_small(slots: torch.Tensor, BM: int):
     blk = torch.cumsum(first.to(torch.int32), 0) - 1            # block id per sorted pair
     start = torch.cummax(torch.where(first, torch.arange(P, device=flat.device, dtype=torch.int32), torch.zeros_like(blk)), 0).values
     rank = torch.arange(P, device=flat.device, dtype=torch.int32) - start
-    block_pair = torch.full((P * BM,), -1, dtype=torch.int32, device=flat.device)
-    block_pair[blk * BM + rank] = order.to(torch.int32)
+    # One spare row past the end: a masked pass (a100-vq/patch_engine_split.py runs the resident
+    # experts while the misses are still loading) marks a pair's slot -1, and those all sort into a
+    # single run, the one case that breaks "no slot owns more than BM pairs" and would scatter into
+    # the next real slot's rows. Sending them to the spare row keeps every shape static, which the
+    # graph-captured decode step requires; with no -1 present this is the original scatter.
+    block_pair = torch.full((P * BM + 1,), -1, dtype=torch.int32, device=flat.device)
+    valid = ss >= 0
+    dump = torch.full_like(blk, P * BM)
+    block_pair[torch.where(valid, blk * BM + rank, dump)] = torch.where(
+        valid, order.to(torch.int32), torch.full_like(order, -1, dtype=torch.int32))
     block_slot = torch.full((P,), -1, dtype=torch.int32, device=flat.device)
     block_slot[blk] = ss
     return block_slot, block_pair, P

@@ -37,6 +37,11 @@ RING = int(os.environ.get("DSV41_RING", 4096))
 # experts and quadrupling the chunk quarters it. The ceiling is activation memory: at T=2048 the
 # gathered window+compressed KV of one layer is ~2.7 GB.
 MAX_CHUNK = int(os.environ.get("DSV41_PREFILL_CHUNK", 2048))
+# a100-vq/patch_engine_split.py: run the residents (and the shared expert) while the misses load
+SPLIT_MOE = os.environ.get("DSV41_SPLIT_MOE") == "1"
+#: layers of lookahead for the oracle prefetch experiment (a100-vq/oracle_probe.py)
+ORACLE_DEPTH = int(os.environ.get("DSV41_ORACLE_DEPTH", "1"))
+LAYER_TIMING = os.environ.get("DSV41_LAYER_TIMING") == "1"
 
 # Chunk invariance requires every GEMM to give the same row whatever the batch length M. cuBLAS
 # picks split-K kernels for small M and, with this flag on, reduces the K-splits in bf16, so
@@ -119,6 +124,15 @@ class Weights:
         self.mtp = []
         for k in range(3 if load_mtp else 0):
             self.mtp.append(MTPWeights(get, k, args, device))
+        # One projection for wq_a + wkv at decode (a100-vq/ab_all.py: -2.23 % of step time,
+        # generated tokens identical). Built once here; decode never concatenates.
+        _nf = R.attach_fused_qkv(self.layers + self.mtp)
+        if _nf:
+            log(f"fused qkv projection on {_nf} blocks")
+        # The LM head is read twice a step and BLOCK_N=16 with one warp measured 27 % faster on it
+        # than the generic decode tile; no rule over N fits, so the shape carries its own.
+        if R.FP4Weight is not None and isinstance(self.head, R.FP4Weight):
+            self.head.tile = (16, 1, 3)
         self.dspark_experts = None  # filled by the engine (arena of 3 x 128 experts)
         log(f"weights: all non-expert weights on GPU in {time.time() - t0:.0f}s")
 
@@ -251,6 +265,10 @@ class Model:
             R.act_qdq_fp8 = lambda x, block=32: x.to(torch.bfloat16)
         self.stats = {"attn_s": 0.0, "moe_s": 0.0, "engram_s": 0.0, "tokens": 0}
         self.begin_prompt()
+
+    #: {layer: top-k expert ids} from a recorded pass; set to prefetch one layer ahead
+    oracle = None
+    _pf_done = {}
 
     def _tap(self, name, L, t):
         if self.tap is not None:
@@ -494,9 +512,25 @@ class Model:
         weights = weights / (weights.sum(dim=-1, keepdim=True) + 1e-20) * a.route_scale
         self._tap("route_idx", L, indices); self._tap("route_w", L, weights)
         t0 = time.perf_counter()
-        slots = store.resolve(L, indices, prefill)
-        routed = self.moe_fn(y, slots, weights, arena, a.swiglu_limit).float()
-        shared = R.expert_ffn(y, w.sh_w1, w.sh_w2, w.sh_w3, a.swiglu_limit).float()
+        w8 = self._pf_done.pop(L, None)
+        if w8 is not None:
+            w8()                   # the prefetch for this layer: let it land before we route
+        res = store.resolve(L, indices, prefill, split=SPLIT_MOE and prefill)
+        if isinstance(res, tuple):
+            slots, pend, wait_for_misses = res
+            # the shared expert is dense bf16 and needs nothing from the expert store, and the
+            # resident routed experts are already in the arena: both can run while the misses are
+            # still coming off NVMe.
+            shared = R.expert_ffn(y, w.sh_w1, w.sh_w2, w.sh_w3, a.swiglu_limit).float()
+            routed = self.moe_fn(y, slots, weights, arena, a.swiglu_limit).float()
+            wait_for_misses()
+            routed = routed + self.moe_fn(y, pend, weights, arena, a.swiglu_limit).float()
+            # the unsplit path rounds the routed sum once, on the way out of moe_fn
+            routed = routed.to(torch.bfloat16).float()
+        else:
+            slots = res
+            routed = self.moe_fn(y, slots, weights, arena, a.swiglu_limit).float()
+            shared = R.expert_ffn(y, w.sh_w1, w.sh_w2, w.sh_w3, a.swiglu_limit).float()
         self._tap("moe_routed", L, routed); self._tap("moe_shared", L, shared)
         out = routed + shared
         self.stats["moe_s"] += time.perf_counter() - t0
@@ -637,9 +671,27 @@ class Model:
                 self.stats["engram_s"] += time.perf_counter() - t0
             if L in a.dspark_target_layer_ids:
                 main_hiddens.append(h.float().mean(dim=1))
+            if self.oracle is not None and prefill:
+                # start the coming layers' experts now, while this layer's attention and dense
+                # parts run. A predictor would have to produce these ids; the oracle knows them.
+                for d in range(1, ORACLE_DEPTH + 1):
+                    nxt = L + d
+                    if nxt in self.oracle and nxt not in self._pf_done:
+                        r = self.store.resolve(nxt, self.oracle[nxt], True, split=True, spec=True)
+                        self._pf_done[nxt] = r[2] if isinstance(r, tuple) else None
             freqs = self.freqs_c if w.ratio else self.freqs_w
+            _tl = time.perf_counter()
+            _tm = self.stats.get("moe_s", 0.0)
             h, pre_mix = self.block(h, pre_mix, w, L, S, sh, self.c.win[L], freqs, prefill, self.store,
                                     self.store.arena, a.n_routed_experts)
+            if self.oracle is not None or LAYER_TIMING:
+                d = self.stats.setdefault("layer_ms", {})
+                tot = (time.perf_counter() - _tl) * 1e3
+                moe = (self.stats.get("moe_s", 0.0) - _tm) * 1e3
+                e = d.setdefault(L, [0.0, 0.0, 0])
+                e[0] += tot - moe      # attention + engram + dense
+                e[1] += moe            # routing, waiting for experts, and the MoE itself
+                e[2] += 1
             self._tap("h", L, h); self._tap("pre_mix", L, pre_mix)
         self.c.len = S + T
         self.stats["tokens"] += T

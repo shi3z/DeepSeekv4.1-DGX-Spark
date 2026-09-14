@@ -22,16 +22,76 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 
 import torch
 
 ALIGN = 4096
 
 
+class _Probe:
+    """How much of a run's wall clock has at least one expert read in flight (DSV41_STORE_PROBE=1).
+
+    prefill reads 70.7 GB at 3.33 GB/s while the same records, same size, same HtoD copy, measure
+    6.13 GB/s from 24 threads in isolation -- so the question is whether the disk is slow or idle.
+    """
+
+    def __init__(self):
+        import threading
+        self.lk = threading.Lock()
+        self.inflight = 0
+        self.busy = 0.0
+        self.since = 0.0
+        self.n = 0
+        self.peak = 0
+        self.t0 = time.perf_counter()
+
+    def reading(self):
+        return _Reading(self)
+
+    def report(self) -> str:
+        wall = time.perf_counter() - self.t0
+        return (f"[store] {self.n} reads, disk busy {self.busy:.1f}s of {wall:.1f}s "
+                f"({self.busy / max(wall, 1e-9) * 100:.0f} %), peak {self.peak} in flight")
+
+
+class _Reading:
+    def __init__(self, p):
+        self.p = p
+
+    def __enter__(self):
+        p = self.p
+        with p.lk:
+            if p.inflight == 0:
+                p.since = time.perf_counter()
+            p.inflight += 1
+            p.n += 1
+            p.peak = max(p.peak, p.inflight)
+
+    def __exit__(self, *a):
+        p = self.p
+        with p.lk:
+            p.inflight -= 1
+            if p.inflight == 0:
+                p.busy += time.perf_counter() - p.since
+
+
+PROBE = _Probe() if os.environ.get("DSV41_STORE_PROBE") == "1" else None
+#: set by ExpertStore.resolve's split path to an event recorded before the resident pass
+GATE = None
+
+
 class CB3Store:
     def __init__(self, path: str, device, punched_path: str = ""):
         meta = json.load(open(path + ".json"))
-        assert meta["format"] == "cb3_v2", meta["format"]
+        # every format that shares the CB3 slot geometry reads the same way; which codebook
+        # decodes it is the engine's EXPERT_FORMAT, not the store's business
+        assert meta["format"] in ("cb3_v2", "vq12_in_cb3_slots", "vq12_from_fp4",
+                                  "cbf8_from_fp4"), meta["format"]
+        self.format = meta["format"]
+        # set by maybe_open when the run's EXPERT_FORMAT does not match this file's: the record is
+        # read as it is and rewritten in the slot (see a100-vq/vq12_fallback.py)
+        self.convert = None
         self.stride = int(meta["stride"])
         assert self.stride % ALIGN == 0, f"record stride {self.stride} is not {ALIGN}-aligned"
         self.offsets = {k: (int(o), int(n), tuple(s)) for k, (o, n, s) in meta["offsets"].items()}
@@ -71,13 +131,26 @@ class CB3Store:
     def load(self, arena, slot: int, key, stream) -> int:
         buf, mv = self._buf()
         rec = self.records[(int(key[0]), int(key[1]))]
-        got = os.preadv(self.fd, [mv], rec * self.stride)
+        if PROBE is None:
+            got = os.preadv(self.fd, [mv], rec * self.stride)
+        else:
+            with PROBE.reading():
+                got = os.preadv(self.fd, [mv], rec * self.stride)
         assert got == self.stride, (got, self.stride)
         compute = torch.cuda.current_stream()
         with torch.cuda.stream(stream):
-            stream.wait_stream(compute)
+            # GATE, when the engine's split path set one, is an event recorded before the resident
+            # MoE was launched: ordering the copy after THAT instead of after the whole compute
+            # stream is what lets the read queue stay full while the resident pass runs.
+            gate = GATE
+            if gate is None:
+                stream.wait_stream(compute)
+            else:
+                stream.wait_event(gate)
             for name, (o, n, shape) in self.offsets.items():
                 getattr(arena, name)[slot].view(-1).copy_(buf[o:o + n], non_blocking=True)
+            if self.convert is not None:
+                self.convert(arena, slot)
         stream.synchronize()
         self.n_hits += 1
         return slot
@@ -94,9 +167,32 @@ def maybe_open(device):
         return None
     punched = os.environ.get("DSV41_FP4_PUNCHED", os.path.join(os.path.dirname(stores[0]),
                                                                "fp4_punched.json"))
-    if len(stores) == 1:
-        return CB3Store(stores[0], device, punched)
-    return MultiStore([CB3Store(s, device) for s in stores], punched)
+    st = (CB3Store(stores[0], device, punched) if len(stores) == 1
+          else MultiStore([CB3Store(s, device) for s in stores], punched))
+    # a VQ12 run reading a CB3 record: re-encode it in the slot rather than raise. The A100-packed
+    # VQ12 store does not cover every expert -- the disk does not hold two full stores -- and the
+    # FP4 bytes behind the uncovered ones are punched.
+    if os.environ.get("EXPERT_FORMAT", "") == "vq6":
+        # VQ6 reads the same record shape but a different code; re-encode each slot as it lands
+        import vq12_fallback
+        conv = vq12_fallback.ToVQ6(device)
+        for f in getattr(st, "stores", [st]):
+            f.convert = conv
+        st.converter = conv
+        print(f"[vq6] {len(st.records)} records will be re-encoded VQ12 -> VQ6 on load", flush=True)
+        return st
+    if os.environ.get("EXPERT_FORMAT", "") == "vq12":
+        import vq12_fallback
+        conv = vq12_fallback.Converter(device)
+        for f in getattr(st, "stores", [st]):
+            if f.format == "cb3_v2":
+                f.convert = conv
+        st.converter = conv
+        n_cb3 = sum(1 for f in st.records.values() if f.format == "cb3_v2") \
+            if isinstance(st, MultiStore) else (len(st.records) if st.format == "cb3_v2" else 0)
+        print(f"[vq12] {len(st.records) - n_cb3} experts come from a VQ12 store, {n_cb3} would be "
+              f"re-encoded from CB3 on the miss path", flush=True)
+    return st
 
 
 class MultiStore:
@@ -107,7 +203,12 @@ class MultiStore:
         self.records = {}
         for st in stores:
             for k in st.records:
-                self.records[k] = st
+                # a later file overrides an earlier one, so a store can be extended without being
+                # rewritten -- except that a record already in the run's own format wins over one
+                # that would have to be converted on the miss path
+                cur = self.records.get(k)
+                if cur is None or cur.format == st.format or st.format != "cb3_v2":
+                    self.records[k] = st
         self.punched = set()
         if punched_path and os.path.exists(punched_path):
             self.punched = {tuple(x) for x in json.load(open(punched_path))["punched"]}

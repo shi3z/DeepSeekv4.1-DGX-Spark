@@ -62,6 +62,25 @@ GRAPH_SEGMENTS = os.environ.get("DSV41_GRAPH_SEGMENTS", "1") == "1"
 # math is identical either way (the buffers get the same values).
 LEAN_STEP = os.environ.get("DSV41_LEAN_STEP", "1") == "1"
 
+# wq_a and wkv read the same x and the same K; with a `wqkv` attached to the block they
+# run as one launch and the K loop is paid once. Bit-exact -- concatenating along N
+# changes no row's arithmetic. 0 restores the two-kernel path.
+FUSE_QKV = os.environ.get("DSV41_FUSE_QKV", "1") == "1"
+
+# The gate weight is BF16 in the checkpoint and f32() promotes it on load, so the
+# fp32 GEMM reads twice the bytes for the same values. 0 restores the fp32 path.
+GATE_BF16 = os.environ.get("DSV41_GATE_BF16", "0") == "1"
+# Set to a list to record (layer, fp32 top-k, bf16 top-k) from the same y.
+GATE_KERNEL = os.environ.get("DSV41_GATE_KERNEL", "1") == "1"
+try:
+    import elem_fused as _EF
+except Exception:
+    _EF = None
+GATE_CMP = None
+RMS_CMP = None
+GATE_KW = {'block_n': 32, 'target': 96, 'num_warps': 2}
+from gate_gemm import gate_linear as GATE_GEMM  # noqa: E402
+
 
 def _fp32_lin(x, w):
     """fp32 y = x @ w^T with an fp32 weight. `x` may be bf16: the Triton kernel upcasts the loaded
@@ -181,6 +200,9 @@ class FastDecoder:
 
     def _rope(self, x, fq, inverse=False):
         rd = self.a.rope_head_dim
+        if (_EF is not None and _EF.ROPE and x.dtype == torch.bfloat16 and x.stride(-1) == 1
+                and fq.dtype == torch.complex64 and x.shape[-1] > rd):
+            return _EF.fused_rope(x, fq, rd, inverse)   # one kernel, no complex tensor, no cat
         return torch.cat([x[..., :-rd], R.apply_rotary(x[..., -rd:], fq, inverse=inverse)], dim=-1)
 
     def _hc_mixes(self, x, hc_fn, hc_scale, hc_base):
@@ -194,9 +216,15 @@ class FastDecoder:
         a = self.a
         T = x.size(0)
         fq = freqs[pos]
-        qr = R.rmsnorm(_lin(x, w.wq_a), w.q_norm, a.norm_eps)
+        wqkv = getattr(w, "wqkv", None) if FUSE_QKV else None
+        if wqkv is None:
+            _qa, _kvin = _lin(x, w.wq_a), _lin(x, w.wkv)
+        else:
+            _qkv = _lin(x, wqkv)
+            _qa, _kvin = _qkv[:, :w.wqkv_split], _qkv[:, w.wqkv_split:]
+        qr = R.rmsnorm(_qa, w.q_norm, a.norm_eps)
         q = self._rope(_lin(qr, w.wq_b).view(T, a.n_heads, a.head_dim), fq)
-        kv = self._rope(R.rmsnorm(_lin(x, w.wkv), w.kv_norm, a.norm_eps), fq)
+        kv = self._rope(R.rmsnorm(_kvin, w.kv_norm, a.norm_eps), fq)
         # The key set is two pieces: the window rows and (verify) the CSA2 rows / (draft) the draft
         # keys. The fused kernel takes both as base pointers, so they are never cat'ed; only the
         # torch fallback materialises kv_all. The draft's window is a stride-0 broadcast view.
@@ -316,18 +344,47 @@ class FastDecoder:
         self.h.copy_(h)
         ffn_pre, ffn_post, ffn_comb = self._hc_mixes(h, w.hc_ffn_fn, w.hc_ffn_scale, w.hc_ffn_base)
         self.ffn_pre.copy_(ffn_pre); self.ffn_post.copy_(ffn_post); self.ffn_comb.copy_(ffn_comb)
-        y = R.rmsnorm(R.hc_pre(h, attn_pre), w.ffn_norm, a.norm_eps)
+        _pre = R.hc_pre(h, attn_pre)
+        y = R.rmsnorm(_pre, w.ffn_norm, a.norm_eps)
+        if RMS_CMP is not None:
+            _sv = _EF.RMSNORM
+            _EF.RMSNORM = not _sv
+            _alt = R.rmsnorm(_pre, w.ffn_norm, a.norm_eps)
+            _EF.RMSNORM = _sv
+            _g = lambda t: (F.softplus(GATE_GEMM(t.to(torch.bfloat16), self.gate_bf16[L],
+                                                 **GATE_KW)).sqrt() + w.gate_bias
+                            ).topk(a.n_activated_experts, dim=-1)[1]
+            RMS_CMP.append((L, _g(y).detach().clone(), _g(_alt).detach().clone(),
+                            torch.equal(y, _alt)))
         self.y.copy_(y)
         # fp32, exactly as Model.moe does it. The gate picks 6 of 384 experts and its scores are
         # full of near-ties, so a bf16 GEMM here (which this path used until 2026-09-11) changes
         # 11 % of the picks at layer 0 -- where the inputs are bit-identical -- and up to 31 %
         # deeper in, which is what made the graphed path disagree with the reference at all.
-        scores = F.softplus(R.mm(y.float(), self.W.layers[L].gate_w)).sqrt()
+        if GATE_KERNEL:
+            scores = F.softplus(GATE_GEMM(y.to(torch.bfloat16), self.gate_bf16[L],
+                                          **GATE_KW)).sqrt()
+        elif GATE_BF16:
+            scores = F.softplus(R.mm(y.to(torch.bfloat16), self.gate_bf16[L]).float()).sqrt()
+        else:
+            scores = F.softplus(R.mm(y.float(), self.W.layers[L].gate_w)).sqrt()
         logits = scores + w.gate_bias
         pm = getattr(self.m, "prune_mask", None)
         if pm is not None and L in pm:
             logits = logits.masked_fill(~pm[L], float("-inf"))
         idx = logits.topk(a.n_activated_experts, dim=-1)[1]
+        if GATE_CMP is not None:
+            from gate_gemm import gate_linear as _gl
+            _raw = _gl(y.to(torch.bfloat16), self.gate_bf16[L], **GATE_KW)
+            _alt = F.softplus(_raw).sqrt()
+            _al = _alt + w.gate_bias
+            _ai = _al.topk(a.n_activated_experts, dim=-1)[1]
+            # margin at the top-k boundary: how far the 6th score is above the 7th
+            _s = torch.topk(logits, a.n_activated_experts + 1, dim=-1)[0]
+            GATE_CMP.append((L, idx.detach().clone(), _ai.detach().clone(),
+                             (_s[:, a.n_activated_experts - 1] - _s[:, a.n_activated_experts]
+                              ).detach().clone(),
+                             (logits - _al).abs().max().detach().clone()))
         wts = scores.gather(1, idx)
         wts = wts / (wts.sum(dim=-1, keepdim=True) + 1e-20) * a.route_scale
         self.route_idx.copy_(idx); self.route_w.copy_(wts)
@@ -342,9 +399,16 @@ class FastDecoder:
     def _layer_b(self, L):
         a = self.a
         w = self.W.layers[L]
-        out = self.m.moe_fn(self.y, self.slots, self.route_w, self.m.store.arena, a.swiglu_limit).float()
-        out += R.expert_ffn(self.y, w.sh_w1, w.sh_w2, w.sh_w3, a.swiglu_limit).float()
-        h = R.hc_post(out.to(torch.bfloat16), self.h, self.ffn_post, self.ffn_comb)
+        rt = self.m.moe_fn(self.y, self.slots, self.route_w, self.m.store.arena, a.swiglu_limit)
+        sh = R.expert_ffn(self.y, w.sh_w1, w.sh_w2, w.sh_w3, a.swiglu_limit)
+        if (_EF is not None and _EF.MERGE and rt.dtype == torch.bfloat16
+                and sh.dtype == torch.bfloat16):
+            merged = _EF.fused_merge(rt, sh)          # bf16(fp32(rt) + fp32(sh)), one kernel
+        else:
+            out = rt.float()
+            out += sh.float()
+            merged = out.to(torch.bfloat16)
+        h = R.hc_post(merged, self.h, self.ffn_post, self.ffn_comb)
         self.h.copy_(h); self.pre_mix.copy_(self.ffn_pre)
 
     def _final(self):
@@ -377,7 +441,25 @@ class FastDecoder:
             residual = h
             ffn_pre, ffn_post, ffn_comb = self._hc_mixes(h, w.hc_ffn_fn, w.hc_ffn_scale, w.hc_ffn_base)
             y = R.rmsnorm(R.hc_pre(h, attn_pre), w.ffn_norm, a.norm_eps)
-            scores = F.softplus(R.mm(y.float(), self.W.mtp[k].gate_w)).sqrt()  # fp32, as Model.moe
+            if GATE_CMP is not None:
+                _r32 = F.softplus(R.mm(y.float(), self.W.mtp[k].gate_w)).sqrt()
+                _rn = F.softplus(GATE_GEMM(y.to(torch.bfloat16), self.mtp_gate_bf16[k],
+                                           **GATE_KW)).sqrt()
+                _bk = self.W.mtp[k].gate_bias
+                _n_act = self.a.n_activated_experts
+                _i32 = (_r32 + _bk).topk(_n_act, dim=-1)[1]
+                _inw = (_rn + _bk).topk(_n_act, dim=-1)[1]
+                _t = torch.topk(_r32 + _bk, _n_act + 1, dim=-1)[0]
+                GATE_CMP.append((100 + k, _i32.detach().clone(), _inw.detach().clone(),
+                                 (_t[:, _n_act - 1] - _t[:, _n_act]).detach().clone(),
+                                 (_r32 - _rn).abs().max().detach().clone()))
+            if GATE_KERNEL:
+                scores = F.softplus(GATE_GEMM(y.to(torch.bfloat16), self.mtp_gate_bf16[k],
+                                              **GATE_KW)).sqrt()
+            elif GATE_BF16:
+                scores = F.softplus(R.mm(y.to(torch.bfloat16), self.mtp_gate_bf16[k]).float()).sqrt()
+            else:
+                scores = F.softplus(R.mm(y.float(), self.W.mtp[k].gate_w)).sqrt()  # fp32, as Model.moe
             idx = (scores + w.gate_bias).topk(3, dim=-1)[1]
             wts = scores.gather(1, idx); wts = wts / (wts.sum(dim=-1, keepdim=True) + 1e-20) * a.route_scale
             slots = (idx.to(torch.int32) + k * 128)

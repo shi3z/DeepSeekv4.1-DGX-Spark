@@ -255,7 +255,7 @@ class V41Engine:
         self.act_quant = act_quant
         self.trace_stats = trace_stats
         self.expert_format = (expert_format or "fp4").lower()
-        assert self.expert_format in ("fp4", "cb3", "tiered"), self.expert_format
+        assert self.expert_format in ("fp4", "cb3", "vq12", "vq6", "cbf8", "tiered"), self.expert_format
         self.sim_cb2_frac = float(sim_cb2_frac or 0.0)
         assert 0.0 <= self.sim_cb2_frac <= 1.0, self.sim_cb2_frac
         try:
@@ -304,6 +304,51 @@ class V41Engine:
             else:
                 log(f"using the tiered MoE arena, streaming: fp4 share {self._tier_fp4_frac:.2f} of "
                     f"the byte budget, cold tier {self._tier_cold_fmt}, the rest read from NVMe at FP4")
+        if self.expert_format == "cbf8":
+            # a100-vq/cbf8: CB3's record byte for byte, its eight `cb` bytes read as int8 level
+            # codes instead of E2M1 codes. Two prmt fetch an arbitrary fp16 level's low and high
+            # byte and two more interleave them, so the codebook stops being the E2M1 grid without
+            # the decode ever touching memory -- and `cvt.rn.f16x2.e2m1x2` is no longer needed.
+            import sys as _sys
+            _sys.path.insert(0, os.path.expanduser("~/dsv41-spark/a100-vq"))
+            import cbf8_moe as F8M
+            from cbf8 import CBF8
+            cb3_cls = F8M.CBF8Arena
+            self._cbf8 = CBF8(device)
+            cb3_moe_fn = F8M.moe_forward_cbf8
+            self.kernel = "triton-cbf8"
+            log("using the Triton CBF8 (eight free fp16 levels, register-only) MoE kernel "
+                "for the routed experts")
+        if self.expert_format == "vq6":
+            # a100-vq/vq6: dim-2 vector quantisation, 64 entries, the same 3 bit/weight and the
+            # same slot geometry. The codebook is small enough that a warp's gather stays inside a
+            # sector, which is what VQ12's 4096-entry table costs on this GPU.
+            import sys as _sys
+            _sys.path.insert(0, os.path.expanduser("~/dsv41-spark/a100-vq"))
+            import vq6_moe as V6M
+            from vq6 import VQ6
+            cb3_cls = V6M.VQ6Arena
+            self._vq6 = VQ6(os.environ.get("DSV41_VQ6_CODEBOOK",
+                                           os.path.expanduser("~/dsv41-spark/a100-vq/vq2_3.npz")),
+                            device)
+            cb3_moe_fn = V6M.moe_forward_vq6
+            self.kernel = "triton-vq6"
+            log("using the Triton VQ6 (dim-2 vector codebook) MoE kernel for the routed experts")
+        if self.expert_format == "vq12":
+            # a100-vq/vq12: CB3's slot geometry and rate, a dim-4 vector codebook instead of a
+            # per-row scalar one. Same bytes, half the quantisation damage (+4.23 % wikitext PPL
+            # against the FP4 checkpoint where CB3 costs +8.54 %).
+            import sys as _sys
+            _sys.path.insert(0, os.path.expanduser("~/dsv41-spark/a100-vq"))
+            import vq12_moe as VQM
+            from vq12 import VQ12
+            cb3_cls = VQM.VQ12Arena
+            self._vq12 = VQ12(os.environ.get("DSV41_VQ12_CODEBOOK",
+                                             os.path.expanduser("~/dsv41-spark/a100-vq/vq_3.0.npz")),
+                              device)
+            cb3_moe_fn = VQM.moe_forward_vq
+            self.kernel = "triton-vq12"
+            log("using the Triton VQ12 (dim-4 vector codebook) MoE kernel for the routed experts")
         if self.expert_format == "cb3":
             import cb3_moe as C3
             from engine.codebook_sim import CodebookSim
@@ -334,6 +379,12 @@ class V41Engine:
             if cb3_cls is None:
                 return fp4_arena_cls(n_slots, device)
             a = cb3_cls(n_slots, device)
+            if self.expert_format == "cbf8":
+                return a.attach(self._cbf8)
+            if self.expert_format == "vq6":
+                return a.attach(self._vq6)
+            if self.expert_format == "vq12":
+                return a.attach(self._vq12)
             a.sim = self._cb3_sim
             return a
 
@@ -613,6 +664,7 @@ class V41Engine:
                 "decode_s": round(t_dec, 3), "decode_tok_s": round(max(n_out - 1, 0) / t_dec, 2),
                 "steps": steps,
                 "accept_len_mean": round(float(np.mean(accepted_hist)) + 1, 2) if accepted_hist else None,
+                "accepted_hist": list(accepted_hist),
                 "expert_hit_rate": round(self.store.hit_rate(), 4), "expert_misses": st["misses"],
                 "prefill_expert_misses": st["prefill_misses"], "nvme_gb": round(st["bytes_read"] / 1e9, 2),
                 "nvme_read_s": round(st["read_s"], 2),
@@ -785,7 +837,7 @@ class V41Engine:
                 a = 0
                 new = []
                 bonus = None
-                for i in range(5):
+                for i in range(self._tv - 1):        # the block's draft count, not a constant
                     pt = sample_probs(logits[i], temperature, top_p)
                     d = int(drafts[i])
                     if temperature <= 0:
@@ -808,7 +860,8 @@ class V41Engine:
                             bonus = int(torch.multinomial(resid / resid.sum(), 1))
                         break
                 if bonus is None and not (new and new[-1] in stop_ids):
-                    pt = sample_probs(logits[a] if a < 5 else logits[5], temperature, top_p)
+                    pt = sample_probs(logits[a] if a < self._tv - 1 else logits[self._tv - 1],
+                                      temperature, top_p)
                     bonus = int(torch.multinomial(pt, 1)) if temperature > 0 else int(pt.argmax())
                 if ph is not None:
                     ph.mark("verify")
@@ -1040,7 +1093,7 @@ if __name__ == "__main__":
     ap.add_argument("--transient-slots", type=int, default=None,
                     help="prefill-miss ring slots (default 400 = a whole layer; 16 is enough when every kept expert is resident)")
     ap.add_argument("--keep-free-gb", type=float, default=None, help="host memory to leave free when auto-sizing the arena (default 20)")
-    ap.add_argument("--expert-format", default=os.environ.get("EXPERT_FORMAT") or "fp4", choices=["fp4", "cb3", "tiered"],
+    ap.add_argument("--expert-format", default=os.environ.get("EXPERT_FORMAT") or "fp4", choices=["fp4", "cb3", "vq12", "vq6", "cbf8", "tiered"],
                     help="routed-expert arena format: fp4 = the checkpoint's packed FP4 (18.80 MB/expert); "
                          "cb3 = the 3-bit per-row codebook format (14.45 MB/expert, 0.769x), packed at warm "
                          "start, which fits ~40.8%% of all routed experts in 90.5 GB instead of 31.3%%")

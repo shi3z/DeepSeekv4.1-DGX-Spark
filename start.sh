@@ -39,7 +39,13 @@ for v in MODEL_DIR PYTHON SERVED_MODEL_NAME HOST PORT MAX_SEQ ARENA_GB \
     [[ -n "${!v:-}" ]] && _CLI[$v]="${!v}"
 done
 # shellcheck disable=SC1091
+# DSV41_* are read straight from the environment by the engine and are not in _CLI, so they
+# have to be saved across the .env source or .env wins over an explicit A/B setting.
+declare -A _DSV=()
+while IFS= read -r _k; do _DSV[$_k]="${!_k}"; done \
+    < <(env | sed -n 's/^\(DSV41_[A-Z0-9_]*\)=.*/\1/p')
 [[ -f .env ]] && { set -a; . ./.env; set +a; }
+for v in "${!_DSV[@]}"; do export "$v"="${_DSV[$v]}"; done
 for v in "${!_CLI[@]}"; do printf -v "$v" '%s' "${_CLI[$v]}"; done
 
 MODEL_DIR="${MODEL_DIR:-./models/DeepSeek-V4.1-Flash}"

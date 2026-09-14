@@ -213,7 +213,7 @@ def moe_forward(x: torch.Tensor, slots: torch.Tensor, weights: torch.Tensor, are
     if wgt.dtype != torch.float32 or not wgt.is_contiguous():
         wgt = wgt.float().contiguous()
     h = torch.empty((P, INTER), dtype=torch.bfloat16, device=dev)
-    parts = torch.empty((P, DIM), dtype=torch.float32, device=dev)
+    parts = _parts((P, DIM), dtype=torch.float32, device=dev)
     _cb3_up_kernel[(NB, INTER // bn1)](
         x, arena.w1_lo, arena.w1_hi, arena.w1_cb, arena.s1, arena.w3_lo, arena.w3_hi, arena.w3_cb, arena.s3, h,
         wgt, block_slot, block_pair, x.stride(0), h.stride(0), float(swiglu_limit),
@@ -221,7 +221,8 @@ def moe_forward(x: torch.Tensor, slots: torch.Tensor, weights: torch.Tensor, are
     _cb3_down_kernel[(NB, DIM // bn2)](
         h, arena.w2_lo, arena.w2_hi, arena.w2_cb, arena.s2, parts, block_slot, block_pair,
         h.stride(0), parts.stride(0), TOPK=K, N=DIM, K=INTER, BM=BM, BN=bn2, NTOK=T, num_warps=nw2, num_stages=ns2)
-    return parts.view(K, T, DIM).sum(dim=0).to(torch.bfloat16)
+    return (parts.view(K, T, DIM).sum(dim=0) if SPLIT
+            else parts.view(K, T, DIM).sum(dim=0).to(torch.bfloat16))
 
 
 if __name__ == "__main__":
@@ -394,6 +395,12 @@ def _cb3v2_down_kernel(
 
 
 UNPACK_BATCH = int(os.environ.get("DSV41_CB3_UNPACK_BATCH", 32))
+# with DSV41_SPLIT_MOE the routed experts are computed in two masked passes, so the rows a
+# pass skips must be zero rather than uninitialised (see a100-vq/patch_engine_split.py)
+SPLIT = os.environ.get("DSV41_SPLIT_MOE") == "1"
+_parts = (lambda *a, **k: torch.zeros(*a, **k)) if SPLIT else (lambda *a, **k: torch.empty(*a, **k))
+# ...and the routed sum stays fp32: splitting the call rounds TWO partial sums to bf16
+# instead of one total, which measured 0.66 % on the logit sum after 40 layers.
 PREFILL_MODE = os.environ.get("DSV41_CB3_PREFILL", "fp4")   # "fp4" = unpack fallback, "direct" = CB3 kernel
 PREFILL_MIN_P = int(os.environ.get("DSV41_CB3_PREFILL_MIN_P", 65))
 
@@ -448,7 +455,7 @@ def moe_forward_v2(x: torch.Tensor, slots: torch.Tensor, weights: torch.Tensor, 
     if wgt.dtype != torch.float32 or not wgt.is_contiguous():
         wgt = wgt.float().contiguous()
     h = torch.empty((P, INTER), dtype=torch.bfloat16, device=dev)
-    parts = torch.empty((P, DIM), dtype=torch.float32, device=dev)
+    parts = _parts((P, DIM), dtype=torch.float32, device=dev)
     _cb3v2_up_kernel[(NB, INTER // bn1)](
         x, arena.w1_lo, arena.w1_hi, arena.w1_cb, arena.s1, arena.w3_lo, arena.w3_hi, arena.w3_cb, arena.s3, h,
         wgt, block_slot, block_pair, x.stride(0), h.stride(0), float(swiglu_limit),
@@ -456,7 +463,8 @@ def moe_forward_v2(x: torch.Tensor, slots: torch.Tensor, weights: torch.Tensor, 
     _cb3v2_down_kernel[(NB, DIM // bn2)](
         h, arena.w2_lo, arena.w2_hi, arena.w2_cb, arena.s2, parts, block_slot, block_pair,
         h.stride(0), parts.stride(0), TOPK=K, N=DIM, K=INTER, BM=BM, BN=bn2, NTOK=T, num_warps=nw2, num_stages=ns2)
-    return parts.view(K, T, DIM).sum(dim=0).to(torch.bfloat16)
+    return (parts.view(K, T, DIM).sum(dim=0) if SPLIT
+            else parts.view(K, T, DIM).sum(dim=0).to(torch.bfloat16))
 
 
 # ---------------------------------------------------------------------------- v3: PTX decode
@@ -714,7 +722,7 @@ def moe_forward_v3(x: torch.Tensor, slots: torch.Tensor, weights: torch.Tensor, 
     if wgt.dtype != torch.float32 or not wgt.is_contiguous():
         wgt = wgt.float().contiguous()
     h = torch.empty((P, INTER), dtype=torch.bfloat16, device=dev)
-    parts = torch.empty((P, DIM), dtype=torch.float32, device=dev)
+    parts = _parts((P, DIM), dtype=torch.float32, device=dev)
     _cb3v3_up_kernel[(NB, INTER // bn1)](
         x, arena.w1_lo, arena.w1_hi, arena.w1_cb, arena.s1, arena.w3_lo, arena.w3_hi, arena.w3_cb, arena.s3, h,
         wgt, block_slot, block_pair, x.stride(0), h.stride(0), float(swiglu_limit),
@@ -722,7 +730,8 @@ def moe_forward_v3(x: torch.Tensor, slots: torch.Tensor, weights: torch.Tensor, 
     _cb3v3_down_kernel[(NB, DIM // bn2)](
         h, arena.w2_lo, arena.w2_hi, arena.w2_cb, arena.s2, parts, block_slot, block_pair,
         h.stride(0), parts.stride(0), TOPK=K, N=DIM, K=INTER, BM=BM, BN=bn2, NTOK=T, NB512=CB3.block_plan(INTER)[0], NB256=CB3.block_plan(INTER)[1], num_warps=nw2, num_stages=ns2)
-    return parts.view(K, T, DIM).sum(dim=0).to(torch.bfloat16)
+    return (parts.view(K, T, DIM).sum(dim=0) if SPLIT
+            else parts.view(K, T, DIM).sum(dim=0).to(torch.bfloat16))
 
 
 # ---------------------------------------------------------------------------- prefill: unpack to FP4
@@ -832,7 +841,7 @@ def moe_forward_prefill(x: torch.Tensor, slots: torch.Tensor, weights: torch.Ten
     # h and parts are written exactly once per (token, k) pair across the batches -- every pair's
     # expert is in exactly one batch -- so neither needs zeroing and the reduction runs once.
     h = torch.empty((P, INTER), dtype=torch.bfloat16, device=dev)
-    parts = torch.empty((P, DIM), dtype=torch.float32, device=dev)
+    parts = _parts((P, DIM), dtype=torch.float32, device=dev)
     for i in range(0, n, batch):
         sel = uniq[i:i + batch]
         b = int(sel.numel())
@@ -848,7 +857,8 @@ def moe_forward_prefill(x: torch.Tensor, slots: torch.Tensor, weights: torch.Ten
         F4._moe_down_kernel[(NB, DIM // bn2)](
             h, scratch.w2, scratch.s2, parts, block_slot, block_pair, h.stride(0), parts.stride(0),
             TOPK=K, N=DIM, K=INTER, BM=BM, BN=bn2, NTOK=T, num_warps=nw2, num_stages=ns2)
-    return parts.view(K, T, DIM).sum(dim=0).to(torch.bfloat16)
+    return (parts.view(K, T, DIM).sum(dim=0) if SPLIT
+            else parts.view(K, T, DIM).sum(dim=0).to(torch.bfloat16))
 
 
 # ============================================================================= CB2: the 2-bit tier
@@ -1124,7 +1134,8 @@ def moe_forward_cb2(x: torch.Tensor, slots: torch.Tensor, weights: torch.Tensor,
         h.stride(0), parts.stride(0), TOPK=K, N=DIM, K=INTER, BM=BM, BN=bn2, NTOK=T,
         NB512=CB3.block_plan(INTER)[0], NB256=CB3.block_plan(INTER)[1],
         num_warps=nw2, num_stages=ns2)
-    return parts.view(K, T, DIM).sum(dim=0).to(torch.bfloat16)
+    return (parts.view(K, T, DIM).sum(dim=0) if SPLIT
+            else parts.view(K, T, DIM).sum(dim=0).to(torch.bfloat16))
 
 
 # ---------------------------------------------------------------------------- CB2 prefill unpack
@@ -1227,4 +1238,5 @@ def moe_forward_cb2_prefill(x: torch.Tensor, slots: torch.Tensor, weights: torch
             h, scratch.w2, scratch.s2, parts, block_slot, block_pair,
             h.stride(0), parts.stride(0), TOPK=K, N=DIM, K=INTER, BM=BM, BN=bn2, NTOK=T,
             num_warps=nw2, num_stages=ns2)
-    return parts.view(K, T, DIM).sum(dim=0).to(torch.bfloat16)
+    return (parts.view(K, T, DIM).sum(dim=0) if SPLIT
+            else parts.view(K, T, DIM).sum(dim=0).to(torch.bfloat16))

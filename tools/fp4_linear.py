@@ -211,6 +211,11 @@ def fp4_linear(x: torch.Tensor, W: FP4Weight, use_f16: bool | None = None,
     M = x2.size(0)
     y = torch.empty(M, W.N, dtype=torch.bfloat16, device=x.device)
     BLOCK_M = 16 if M <= 16 else 64
+    # A weight may carry (block_n, num_warps, num_stages) measured for its own decode shape; see
+    # a100-vq/tile_policy.py. Only consulted for a generic decode-sized call.
+    _hint = getattr(W, "tile", None) if (block_n is None and BLOCK_M <= 16) else None
+    if _hint is not None:
+        block_n, num_warps, num_stages = _hint
     BLOCK_N = pick_block_n(W.N, M, BLOCK_M) if block_n is None else block_n
     grid = (triton.cdiv(W.N, BLOCK_N), triton.cdiv(M, BLOCK_M))
     _fp4_linear_kernel[grid](x2, W.w, W.s, y, M, W.N, W.K // 128,

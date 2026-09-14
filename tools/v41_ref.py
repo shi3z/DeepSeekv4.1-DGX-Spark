@@ -343,6 +343,31 @@ class LayerWeights:
                 self.comp_wkv = bf("attn.compressor.wkv.weight")
 
 
+def attach_fused_qkv(blocks, tile=(16, 1, 3)):
+    """Give each block a `wqkv` = [wq_a ; wkv] so decode runs one projection instead of two.
+
+    `_attention` applies both to the same x and both scan K = 5120; neither is bandwidth-bound at
+    decode M (wkv moves 1.56 MB and costs as much as wq_a's 3.91 MB, which is what a serial K loop
+    costs whatever the byte count). Concatenating along N leaves every output row's dot product
+    unchanged, so this is a scheduling change: measured bit-exact at the kernel and token-identical
+    end to end. `tile` is the decode tile measured for the fused shape; None leaves the generic one.
+    """
+    n = 0
+    for b in blocks:
+        qa, kv = getattr(b, "wq_a", None), getattr(b, "wkv", None)
+        if FP4Weight is None or not isinstance(qa, FP4Weight) or not isinstance(kv, FP4Weight):
+            continue
+        if qa.K != kv.K:
+            continue
+        b.wqkv = FP4Weight(torch.cat([qa.w, kv.w], 0).contiguous(),
+                           torch.cat([qa.s, kv.s], 0).contiguous(), qa.N + kv.N, qa.K)
+        b.wqkv_split = qa.N
+        if tile is not None:
+            b.wqkv.tile = tile
+        n += 1
+    return n
+
+
 def make_wo_a(weight, scale, args, groups=None):
     """The attention output LoRA. `convert.py` dequantizes wo_a to bf16 and everything downstream
     kept it that way: [8, 1024, 4096] bf16 = 67 MB per layer, 2.7 GB read per decode step. With
@@ -530,6 +555,10 @@ def rms_rsqrt(x: torch.Tensor, eps: float) -> torch.Tensor:
 
 
 def rmsnorm(x: torch.Tensor, w: torch.Tensor, eps: float) -> torch.Tensor:
+    if (_EF is not None and _EF.RMSNORM and x.ndim == 2 and x.dtype == torch.bfloat16
+            and w.dtype == torch.bfloat16 and x.stride(1) == 1 and w.is_contiguous()
+            and x.shape[0] <= _EF.RMSNORM_MAX_M and x.shape[1] <= _EF.RMSNORM_MAX_N):
+        return _EF.fused_rmsnorm(x, w, eps)      # nine launches -> one, same fp32 arithmetic
     dtype = x.dtype
     xf = x.float()
     xf = xf * rms_rsqrt(xf, eps)
@@ -594,6 +623,10 @@ def hc_post(x: torch.Tensor, residual: torch.Tensor, post: torch.Tensor, comb: t
     of this port summed over the second index, comb @ residual: a transposed mixing matrix that
     left the model coherent but measurably worse -- teacher-forced NLL and stuttering generation.)
     """
+    if (_EF is not None and getattr(_EF, "HC_POST", False) and x.dtype == torch.bfloat16
+            and residual.dtype == torch.bfloat16 and x.is_contiguous()
+            and residual.is_contiguous() and residual.shape[1] in (2, 4, 8)):
+        return _EF.fused_hc_post(x, residual, post, comb)
     mixed = torch.einsum("sij,sid->sjd", comb.float(), residual.float())
     y = post.unsqueeze(-1) * x.float().unsqueeze(1) + mixed
     return y.type_as(x)
@@ -610,10 +643,23 @@ def router(x: torch.Tensor, w: LayerWeights, args: Args):
     return weights, indices, scores
 
 
+try:
+    import elem_fused as _EF
+except Exception:
+    _EF = None
+
+
 def expert_ffn(x: torch.Tensor, w1, w2, w3, limit: float, weights: torch.Tensor | None = None) -> torch.Tensor:
     dtype = x.dtype
-    gate = qlinear(x, w1).float()
-    up = qlinear(x, w3).float()
+    g = qlinear(x, w1)
+    u = qlinear(x, w3)
+    if (weights is None and limit > 0 and _EF is not None and _EF.SWIGLU
+            and g.dtype == torch.bfloat16 and u.dtype == torch.bfloat16):
+        # one kernel instead of two casts, two clamps, a silu, a multiply and a cast back;
+        # bit-identical to the sequence below (a100-vq/elem_fuse.py, T = 1..8)
+        return qlinear(_EF.fused_swiglu(g, u, limit), w2)
+    gate = g.float()
+    up = u.float()
     if limit > 0:
         up = torch.clamp(up, min=-limit, max=limit)
         gate = torch.clamp(gate, max=limit)
